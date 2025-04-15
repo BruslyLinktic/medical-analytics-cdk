@@ -4,6 +4,7 @@ import os
 import aws_cdk as cdk
 
 from medical_analytics.storage_stack import StorageStack
+from medical_analytics.ingestion_stack import IngestionStack
 
 app = cdk.App()
 
@@ -28,8 +29,23 @@ storage_stack = StorageStack(
     description="Stack de almacenamiento para el sistema de analítica médica"
 )
 
+# Despliegue del stack de ingesta
+ingestion_stack = IngestionStack(
+    app,
+    "medical-analytics-ingestion-dev",
+    storage_bucket=storage_stack.bucket,
+    storage_key_arn=storage_stack.encryption_key_arn,
+    ingestion_role=storage_stack.ingestion_role,
+    env=env,
+    description="Stack de ingesta para el sistema de analítica médica"
+)
+
+# Definir dependencia explícita
+ingestion_stack.add_dependency(storage_stack)
+
 # Aplicar tags a todos los recursos del stack
-for key, value in tags.items():
-    cdk.Tags.of(storage_stack).add(key, value)
+for stack in [storage_stack, ingestion_stack]:
+    for key, value in tags.items():
+        cdk.Tags.of(stack).add(key, value)
 
 app.synth()
