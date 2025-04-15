@@ -9,7 +9,8 @@ from aws_cdk import (
     aws_events_targets as targets,
     aws_s3_deployment as s3_deployment,
     aws_logs as logs,
-    aws_sns as sns
+    aws_sns as sns,
+    CfnOutput
 )
 from constructs import Construct
 
@@ -45,6 +46,28 @@ class IngestionStack(Stack):
         self.api_ingestion_lambda = self._create_api_ingestion_component()
         self.upload_api, self.file_processor_lambda = self._create_file_upload_api()
         self.frontend_url = self._create_frontend()
+        
+        # Crear salidas del stack
+        CfnOutput(
+            self,
+            "ApiEndpoint",
+            description="Endpoint de la API para carga de archivos",
+            value=f"{self.upload_api.url}upload"
+        )
+        
+        CfnOutput(
+            self,
+            "FrontendUrl",
+            description="URL del frontend para carga de archivos",
+            value=self.frontend_url
+        )
+        
+        CfnOutput(
+            self,
+            "ErrorTopicArn",
+            description="ARN del tópico SNS para notificaciones de error",
+            value=self.error_topic.topic_arn
+        )
         
     def _create_api_ingestion_component(self):
         """
