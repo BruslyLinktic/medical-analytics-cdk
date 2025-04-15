@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sistema de Analítica Médica - Carga de Archivos</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            padding-top: 50px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            padding: 30px;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 1px solid #e9ecef;
+        }
+        .file-input-container {
+            border: 2px dashed #ced4da;
+            border-radius: 5px;
+            padding: 50px 20px;
+            text-align: center;
+            margin-bottom: 20px;
+            cursor: pointer;
+            transition: background-color 0.3s ease;
+        }
+        .file-input-container:hover {
+            background-color: #f8f9fa;
+        }
+        #fileInput {
+            display: none;
+        }
+        .status-container {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        .status-success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status-error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+        .status-info {
+            background-color: #cce5ff;
+            color: #004085;
+        }
+        .file-info {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #6c757d;
+        }
+        .progress {
+            margin-top: 20px;
+            display: none;
+        }
+        .instructions {
+            margin-top: 30px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2>Sistema de Analítica Médica</h2>
+            <p class="text-muted">Herramienta para carga de archivos Excel</p>
+        </div>
+
+        <div class="file-input-container" id="dropZone">
+            <img src="https://cdn-icons-png.flaticon.com/512/6133/6133991.png" alt="Excel Icon" width="50" height="50">
+            <h4 class="mt-3">Arrastra y suelta tu archivo Excel aquí</h4>
+            <p class="text-muted">o</p>
+            <button class="btn btn-primary" id="browseBtn">Seleccionar Archivo</button>
+            <input type="file" id="fileInput" accept=".xlsx,.xls">
+            
+            <div class="file-info" id="fileInfo"></div>
+        </div>
+
+        <div class="progress">
+            <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+        </div>
+
+        <div class="status-container" id="statusContainer"></div>
+
+        <div class="mt-3">
+            <button class="btn btn-success w-100" id="uploadBtn" disabled>Subir Archivo</button>
+        </div>
+
+        <div class="instructions">
+            <h5>Instrucciones:</h5>
+            <ol>
+                <li>Selecciona un archivo Excel (.xlsx o .xls) con los datos médicos.</li>
+                <li>El archivo debe contener las columnas: NUMDOC_PACIENTE, FECHA_FOLIO, NOMBRE_PACIENTE, DIAGNÓSTICO.</li>
+                <li>El tamaño máximo permitido es de 10MB.</li>
+                <li>Una vez cargado el archivo, se procesará y almacenará de forma segura.</li>
+                <li>Recibirás una confirmación cuando el proceso haya finalizado.</li>
+            </ol>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Elementos del DOM
+            const dropZone = document.getElementById('dropZone');
+            const fileInput = document.getElementById('fileInput');
+            const browseBtn = document.getElementById('browseBtn');
+            const uploadBtn = document.getElementById('uploadBtn');
+            const fileInfo = document.getElementById('fileInfo');
+            const statusContainer = document.getElementById('statusContainer');
+            const progressBar = document.querySelector('.progress');
+            const progressBarInner = document.querySelector('.progress-bar');
+            
+            // URL de la API (se reemplazará en tiempo de despliegue)
+            const API_URL = '{{API_ENDPOINT}}';
+            
+            // Evento para el botón de examinar
+            browseBtn.addEventListener('click', function() {
+                fileInput.click();
+            });
+            
+            // Eventos para arrastrar y soltar
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, preventDefaults, false);
+            });
+            
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+            
+            ['dragenter', 'dragover'].forEach(eventName => {
+                dropZone.addEventListener(eventName, highlight, false);
+            });
+            
+            ['dragleave', 'drop'].forEach(eventName => {
+                dropZone.addEventListener(eventName, unhighlight, false);
+            });
+            
+            function highlight() {
+                dropZone.style.borderColor = '#80bdff';
+                dropZone.style.backgroundColor = '#f8f9fa';
+            }
+            
+            function unhighlight() {
+                dropZone.style.borderColor = '#ced4da';
+                dropZone.style.backgroundColor = '';
+            }
+            
+            // Manejar el evento de soltar archivo
+            dropZone.addEventListener('drop', handleDrop, false);
+            
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                handleFiles(files);
+            }
+            
+            // Manejar cambio en input de archivo
+            fileInput.addEventListener('change', function() {
+                handleFiles(this.files);
+            });
+            
+            // Procesar archivos seleccionados
+            function handleFiles(files) {
+                if (files.length > 0) {
+                    const file = files[0];
+                    validateFile(file);
+                }
+            }
+            
+            // Validar archivo
+            function validateFile(file) {
+                // Verificar extensión
+                const fileName = file.name;
+                const fileExt = fileName.split('.').pop().toLowerCase();
+                
+                if (fileExt !== 'xlsx' && fileExt !== 'xls') {
+                    showStatus('Solo se permiten archivos Excel (.xlsx, .xls)', 'error');
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                
+                // Verificar tamaño (max 10MB)
+                if (file.size > 10 * 1024 * 1024) {
+                    showStatus('El archivo excede el tamaño máximo permitido (10MB)', 'error');
+                    uploadBtn.disabled = true;
+                    return;
+                }
+                
+                // Mostrar información del archivo
+                fileInfo.innerHTML = `<strong>Archivo:</strong> ${file.name}<br><strong>Tamaño:</strong> ${formatFileSize(file.size)}`;
+                uploadBtn.disabled = false;
+                showStatus('Archivo válido. Presiona "Subir Archivo" para continuar.', 'info');
+            }
+            
+            // Formatear tamaño de archivo
+            function formatFileSize(bytes) {
+                if (bytes < 1024) return bytes + ' bytes';
+                else if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+                else return (bytes / 1048576).toFixed(1) + ' MB';
+            }
+            
+            // Mostrar mensaje de estado
+            function showStatus(message, type) {
+                statusContainer.innerHTML = message;
+                statusContainer.className = 'status-container';
+                statusContainer.classList.add('status-' + type);
+                statusContainer.style.display = 'block';
+            }
+            
+            // Manejar carga de archivo
+            uploadBtn.addEventListener('click', function() {
+                if (fileInput.files.length === 0) {
+                    showStatus('Por favor selecciona un archivo primero', 'error');
+                    return;
+                }
+                
+                const file = fileInput.files[0];
+                uploadFile(file);
+            });
+            
+            // Subir archivo a la API
+            function uploadFile(file) {
+                // Mostrar progreso
+                progressBar.style.display = 'flex';
+                progressBarInner.style.width = '0%';
+                
+                const reader = new FileReader();
+                reader.readAsDataURL(file);
+                
+                reader.onload = function() {
+                    // Obtener base64 del archivo (removiendo la parte inicial)
+                    const base64data = reader.result.split(',')[1];
+                    
+                    // Preparar datos para enviar
+                    const data = {
+                        file: base64data,
+                        filename: file.name
+                    };
+                    
+                    // Mostrar progreso de lectura completa
+                    progressBarInner.style.width = '50%';
+                    
+                    // Enviar archivo a la API
+                    fetch(API_URL, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    })
+                    .then(response => {
+                        // Mostrar progreso de envío completo
+                        progressBarInner.style.width = '100%';
+                        
+                        return response.json().then(data => {
+                            if (!response.ok) {
+                                throw new Error(data.message || 'Error en la carga del archivo');
+                            }
+                            return data;
+                        });
+                    })
+                    .then(data => {
+                        // Éxito
+                        showStatus(`Archivo procesado exitosamente. ID de solicitud: ${data.request_id}`, 'success');
+                        
+                        // Resetear formulario
+                        fileInput.value = '';
+                        fileInfo.innerHTML = '';
+                        uploadBtn.disabled = true;
+                    })
+                    .catch(error => {
+                        // Error
+                        showStatus(`Error: ${error.message}`, 'error');
+                    })
+                    .finally(() => {
+                        // Ocultar barra de progreso después de un tiempo
+                        setTimeout(() => {
+                            progressBar.style.display = 'none';
+                        }, 2000);
+                    });
+                };
+                
+                reader.onerror = function() {
+                    showStatus('Error al leer el archivo', 'error');
+                    progressBar.style.display = 'none';
+                };
+            }
+        });
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
