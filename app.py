@@ -29,6 +29,10 @@ storage_stack = StorageStack(
     description="Stack de almacenamiento para el sistema de analítica médica"
 )
 
+# Crear un tópico SNS para errores a nivel de aplicación en el stack de almacenamiento
+# Esto evita dependencias cíclicas
+sns_topic = storage_stack.create_error_topic("MedicalAnalyticsErrorTopic")
+
 # Despliegue del stack de ingesta
 ingestion_stack = IngestionStack(
     app,
@@ -36,6 +40,7 @@ ingestion_stack = IngestionStack(
     storage_bucket=storage_stack.bucket,
     storage_key_arn=storage_stack.encryption_key_arn,
     ingestion_role=storage_stack.ingestion_role,
+    error_topic=sns_topic,
     env=env,
     description="Stack de ingesta para el sistema de analítica médica"
 )

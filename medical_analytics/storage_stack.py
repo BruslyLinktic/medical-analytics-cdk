@@ -4,7 +4,8 @@ from aws_cdk import (
     RemovalPolicy,
     aws_s3 as s3,
     aws_iam as iam,
-    aws_kms as kms
+    aws_kms as kms,
+    aws_sns as sns
 )
 from constructs import Construct
 
@@ -70,11 +71,27 @@ class StorageStack(Stack):
         self.encryption_key = encryption_key
         self.encryption_key_arn = encryption_key.key_arn
 
+    def create_error_topic(self, id_base: str) -> sns.Topic:
+        """
+        Crea un tópico SNS para notificaciones de error en este stack.
+        Esto evita dependencias cíclicas entre stacks.
+        """
+        error_topic = sns.Topic(
+            self, 
+            id_base,
+            display_name="Errores de Ingesta de Datos Médicos",
+            topic_name="medical-analytics-errors"
+        )
+        
+        return error_topic
+
     def _create_folder_structure(self, bucket: s3.Bucket) -> None:
         """
-        Crea la estructura de carpetas dentro del bucket S3.
+        Nota: En S3 no hay necesidad de crear carpetas explícitamente.
+        Las "carpetas" son conceptos lógicos basados en prefijos de nombres de objetos.
+        Los objetos se crearán con las rutas correctas durante el funcionamiento normal del sistema.
         
-        La estructura sigue el patrón:
+        La estructura esperada será:
         - raw/api/
         - raw/excel/
         - cleaned/pacientes/
@@ -83,26 +100,9 @@ class StorageStack(Stack):
         - curated/indicadores/dm/
         - curated/agregados/
         """
-        # Crear objetos vacíos con nombres terminados en "/" para simular carpetas
-        folders = [
-            "raw/api/",
-            "raw/excel/",
-            "cleaned/pacientes/",
-            "cleaned/diagnosticos/",
-            "curated/indicadores/hta/",
-            "curated/indicadores/dm/",
-            "curated/agregados/"
-        ]
-        
-        for folder in folders:
-            s3.BucketDeployment(
-                self,
-                f"CreateFolder{folder.replace('/', '-')}",
-                sources=[s3.Source.asset("./empty-folder")],
-                destination_bucket=bucket,
-                destination_key_prefix=folder,
-                retain_on_delete=False
-            )
+        # En AWS S3, las carpetas son conceptos lógicos y no necesitan crearse explícitamente
+        # Las carpetas aparecerán automáticamente cuando se creen objetos con esos prefijos
+        pass
 
     def _create_iam_roles(self, bucket: s3.Bucket, key: kms.Key) -> None:
         """
@@ -152,6 +152,14 @@ class StorageStack(Stack):
                     "logs:PutLogEvents"
                 ],
                 resources=["arn:aws:logs:*:*:*"]
+            )
+        )
+
+        # Permisos para SNS (publicación de mensajes de error)
+        ingestion_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=["sns:Publish"],
+                resources=["*"]  # Se limitará a nivel de tópico SNS
             )
         )
 

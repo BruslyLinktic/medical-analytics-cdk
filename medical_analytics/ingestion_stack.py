@@ -1,13 +1,13 @@
 from aws_cdk import (
     Stack,
     Duration,
+    RemovalPolicy,
     aws_lambda as lambda_,
     aws_s3 as s3,
     aws_apigateway as apigateway,
     aws_iam as iam,
     aws_events as events,
     aws_events_targets as targets,
-    aws_s3_deployment as s3_deployment,
     aws_logs as logs,
     aws_sns as sns,
     CfnOutput
@@ -26,6 +26,7 @@ class IngestionStack(Stack):
                  storage_bucket: s3.IBucket, 
                  storage_key_arn: str, 
                  ingestion_role: iam.IRole,
+                 error_topic: sns.ITopic,
                  **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
         
@@ -33,14 +34,7 @@ class IngestionStack(Stack):
         self.bucket = storage_bucket
         self.key_arn = storage_key_arn
         self.ingestion_role = ingestion_role
-        
-        # Crear tópico SNS para notificaciones de error
-        self.error_topic = sns.Topic(
-            self, 
-            "MedicalAnalyticsErrorTopic",
-            display_name="Errores de Ingesta de Datos Médicos",
-            topic_name="medical-analytics-errors"
-        )
+        self.error_topic = error_topic
         
         # Implementar componentes de ingesta
         self.api_ingestion_lambda = self._create_api_ingestion_component()
@@ -200,27 +194,65 @@ class IngestionStack(Stack):
         
     def _create_frontend(self):
         """
-        Crea un frontend simple para la carga de archivos.
+        Crea un frontend simple para la carga de archivos usando CloudFront
+        para acceso seguro en lugar de habilitar acceso público directo al bucket S3.
         """
-        # Crear bucket para alojar el frontend
+        # Crear bucket para alojar el frontend (SIN acceso público)
         frontend_bucket = s3.Bucket(
             self,
             "MedicalAnalyticsFrontendBucket",
             bucket_name="medical-analytics-frontend-dev",
-            public_read_access=True,  # Necesario para acceso web público
-            website_index_document="index.html",
-            website_error_document="index.html"
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,  # Bloqueamos todo acceso público
+            removal_policy=RemovalPolicy.DESTROY  # Eliminar el bucket cuando se destruya el stack
         )
         
-        # Desplegar archivos estáticos al bucket
-        deployment = s3_deployment.BucketDeployment(
+        # Crear una distribución CloudFront para servir el contenido del frontend de forma segura
+        origin_access_identity = cloudfront.OriginAccessIdentity(
+            self, 
+            "MedicalAnalyticsFrontendOAI",
+            comment="OAI para acceder al bucket de frontend de Medical Analytics"
+        )
+        
+        # Otorgar permisos de lectura a CloudFront OAI
+        frontend_bucket.grant_read(origin_access_identity)
+        
+        # Crear distribución CloudFront
+        distribution = cloudfront.Distribution(
             self,
-            "MedicalAnalyticsFrontendDeployment",
-            sources=[s3_deployment.Source.asset("frontend")],
-            destination_bucket=frontend_bucket,
-            retention_policy=s3_deployment.RetentionPolicy.DESTROY
+            "MedicalAnalyticsFrontendDistribution",
+            default_behavior=cloudfront.BehaviorOptions(
+                origin=origins.S3Origin(
+                    bucket=frontend_bucket,
+                    origin_access_identity=origin_access_identity
+                ),
+                viewer_protocol_policy=cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+                cache_policy=cloudfront.CachePolicy.CACHING_OPTIMIZED
+            ),
+            default_root_object="index.html",
+            error_responses=[
+                cloudfront.ErrorResponse(
+                    http_status=404,
+                    response_http_status=200,
+                    response_page_path="/index.html"  # SPA handling
+                )
+            ]
         )
         
-        # Obtener URL del frontend
-        frontend_url = f"http://{frontend_bucket.bucket_website_domain_name}"
+        # Se podría agregar un despliegue inicial de archivos (opcional)
+        # s3_deployment.BucketDeployment(
+        #     self,
+        #     "MedicalAnalyticsFrontendDeployment",
+        #     sources=[s3_deployment.Source.asset("frontend/build")],
+        #     destination_bucket=frontend_bucket,
+        #     distribution=distribution,
+        #     distribution_paths=["/*"]
+        # )
+        
+        # Obtener URL del frontend (usando CloudFront)
+        frontend_url = f"https://{distribution.distribution_domain_name}"
+        
+        # Almacenar referencias para uso futuro
+        self.frontend_bucket = frontend_bucket
+        self.frontend_distribution = distribution
+        
         return frontend_url
