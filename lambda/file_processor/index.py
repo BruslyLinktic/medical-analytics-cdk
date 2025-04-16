@@ -7,6 +7,7 @@ import datetime
 import uuid
 import re
 import io
+import traceback
 import pandas as pd
 from botocore.exceptions import ClientError
 
@@ -36,8 +37,10 @@ def handler(event, context):
     Returns:
         dict: Respuesta para API Gateway
     """
+    request_id = str(uuid.uuid4())
+    
     try:
-        logger.info("Iniciando procesamiento de archivo")
+        logger.info(f"Iniciando procesamiento de archivo. Request ID: {request_id}")
         
         # Validar el cuerpo de la solicitud
         if 'body' not in event:
@@ -46,7 +49,10 @@ def handler(event, context):
         # Si el body viene como string (dependiendo de la configuración de API Gateway)
         body = event['body']
         if isinstance(body, str):
-            body = json.loads(body)
+            try:
+                body = json.loads(body)
+            except json.JSONDecodeError:
+                return build_response(400, 'El cuerpo de la solicitud no es un JSON válido')
         
         # Obtener datos del archivo
         if 'file' not in body or 'filename' not in body:
@@ -55,6 +61,9 @@ def handler(event, context):
         file_content_b64 = body['file']
         original_filename = body['filename']
         
+        # Registrar inicio del procesamiento
+        logger.info(f"Procesando archivo: {original_filename}, tamaño (base64): {len(file_content_b64) if file_content_b64 else 0}")
+        
         # Validar nombre y extensión del archivo
         if not is_valid_filename(original_filename):
             return build_response(400, 'Nombre de archivo inválido o extensión no permitida')
@@ -62,7 +71,8 @@ def handler(event, context):
         # Decodificar el contenido del archivo
         try:
             file_content = base64.b64decode(file_content_b64)
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error al decodificar el contenido del archivo: {str(e)}")
             return build_response(400, 'Error al decodificar el contenido del archivo')
         
         # Validar tamaño del archivo
@@ -78,7 +88,6 @@ def handler(event, context):
         today = datetime.datetime.now().strftime('%Y-%m-%d')
         timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         sanitized_filename = sanitize_filename(original_filename)
-        request_id = str(uuid.uuid4())
         
         # Construir ruta de destino en S3
         s3_key = f"raw/excel/{today}/{timestamp}_{request_id}_{sanitized_filename}"
@@ -88,7 +97,13 @@ def handler(event, context):
             Bucket=BUCKET_NAME,
             Key=s3_key,
             Body=file_content,
-            ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if sanitized_filename.endswith('.xlsx') else 'application/vnd.ms-excel'
+            ContentType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' if sanitized_filename.endswith('.xlsx') else 'application/vnd.ms-excel',
+            Metadata={
+                'original-filename': original_filename,
+                'request-id': request_id,
+                'lambda-request-id': context.aws_request_id,
+                'source': 'file-upload'
+            }
         )
         
         logger.info(f"Archivo guardado exitosamente en s3://{BUCKET_NAME}/{s3_key}")
@@ -96,14 +111,20 @@ def handler(event, context):
         # Registrar metadatos para auditoría
         client_ip = event.get('requestContext', {}).get('identity', {}).get('sourceIp', 'unknown')
         user_agent = event.get('requestContext', {}).get('identity', {}).get('userAgent', 'unknown')
+        api_id = event.get('requestContext', {}).get('apiId', 'unknown')
         
         metadata = {
             'original_filename': original_filename,
+            'sanitized_filename': sanitized_filename,
             'timestamp': datetime.datetime.now().isoformat(),
             'client_ip': client_ip,
             'user_agent': user_agent,
+            'api_id': api_id,
+            'api_stage': event.get('requestContext', {}).get('stage', 'unknown'),
             'file_size_bytes': len(file_content),
-            'request_id': request_id
+            'request_id': request_id,
+            'lambda_request_id': context.aws_request_id,
+            'validation_result': 'passed'
         }
         
         # Guardar metadatos en S3
@@ -114,6 +135,20 @@ def handler(event, context):
             ContentType='application/json'
         )
         
+        # Registrar actividad para auditoría
+        log_activity(
+            action="file_upload_success",
+            details={
+                "original_filename": original_filename,
+                "file_size_bytes": len(file_content),
+                "client_ip": client_ip,
+                "user_agent": user_agent,
+                "s3_location": f"s3://{BUCKET_NAME}/{s3_key}"
+            },
+            request_id=request_id,
+            context=context
+        )
+        
         return build_response(200, {
             'message': 'Archivo procesado exitosamente',
             's3_location': f"s3://{BUCKET_NAME}/{s3_key}",
@@ -121,22 +156,31 @@ def handler(event, context):
         })
     
     except Exception as e:
-        logger.error(f"Error en el procesamiento del archivo: {str(e)}")
+        # Capturar detalles del error
+        error_type = type(e).__name__
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
+        
+        logger.error(f"Error en el procesamiento del archivo: {error_message}")
+        logger.error(f"Stack trace: {stack_trace}")
         
         # Enviar notificación de error para su revisión
-        if ERROR_TOPIC_ARN:
-            try:
-                sns.publish(
-                    TopicArn=ERROR_TOPIC_ARN,
-                    Subject=f"Error en procesamiento de archivo",
-                    Message=f"Se produjo un error al procesar un archivo:\n{str(e)}"
-                )
-            except Exception as sns_error:
-                logger.error(f"Error al enviar notificación: {str(sns_error)}")
+        notify_error(error_type, error_message, request_id, context.aws_request_id, stack_trace)
+        
+        # Registrar actividad de error
+        log_activity(
+            action="file_upload_error",
+            details={
+                "error_type": error_type,
+                "error_message": error_message
+            },
+            request_id=request_id,
+            context=context
+        )
         
         return build_response(500, {
             'message': 'Error interno al procesar el archivo',
-            'error_id': str(uuid.uuid4())
+            'error_id': request_id
         })
 
 def is_valid_filename(filename):
@@ -151,15 +195,18 @@ def is_valid_filename(filename):
     """
     # Verificar que el nombre no esté vacío
     if not filename or len(filename) < 5:  # Al menos "a.xls"
+        logger.warning(f"Nombre de archivo demasiado corto: {filename}")
         return False
     
     # Verificar extensión
     extension = filename.split('.')[-1].lower()
     if extension not in ALLOWED_EXTENSIONS:
+        logger.warning(f"Extensión no permitida: {extension}. Permitidas: {', '.join(ALLOWED_EXTENSIONS)}")
         return False
     
     # Verificar caracteres válidos (letras, números, puntos, guiones, espacios)
     if not re.match(r'^[a-zA-Z0-9\-_\.\s]+$', filename):
+        logger.warning(f"Nombre de archivo contiene caracteres no válidos: {filename}")
         return False
     
     return True
@@ -198,7 +245,16 @@ def validate_excel_structure(file_content):
     try:
         # Cargar el archivo Excel en un DataFrame
         excel_file = io.BytesIO(file_content)
-        df = pd.read_excel(excel_file)
+        
+        # Intentar leer con pandas para detectar archivos dañados
+        try:
+            df = pd.read_excel(excel_file)
+        except Exception as e:
+            logger.error(f"Error al leer el archivo Excel: {str(e)}")
+            return {'valid': False, 'message': f'Archivo Excel dañado o inválido: {str(e)}'}
+        
+        # Resetear el buffer para volver a leer
+        excel_file.seek(0)
         
         # Verificar que no esté vacío
         if df.empty:
@@ -209,13 +265,104 @@ def validate_excel_structure(file_content):
         if missing_columns:
             return {'valid': False, 'message': f'Faltan columnas requeridas: {", ".join(missing_columns)}'}
         
-        # Verificar que no haya macros (esto es simplificado, la verificación real puede ser más compleja)
-        # Una verificación real podría implicar análisis más profundo del archivo
+        # Verificar al menos una fila de datos (además de cabeceras)
+        if len(df) < 1:
+            return {'valid': False, 'message': 'El archivo no contiene registros de datos'}
         
+        # Verificar tipos de datos en columnas clave
+        if 'NUMDOC_PACIENTE' in df.columns:
+            # Verificar que los números de documento no sean nulos
+            null_docs = df['NUMDOC_PACIENTE'].isnull().sum()
+            if null_docs > 0:
+                return {'valid': False, 'message': f'Existen {null_docs} pacientes sin número de documento'}
+        
+        # Validar fechas
+        if 'FECHA_FOLIO' in df.columns:
+            try:
+                # Intentar convertir a datetime para validar
+                pd.to_datetime(df['FECHA_FOLIO'])
+            except Exception as e:
+                return {'valid': False, 'message': f'El formato de fecha es inválido en la columna FECHA_FOLIO: {str(e)}'}
+        
+        # Todo parece correcto
         return {'valid': True, 'message': 'Estructura válida'}
     
     except Exception as e:
+        logger.error(f"Error al validar estructura: {str(e)}")
         return {'valid': False, 'message': f'Error al validar estructura: {str(e)}'}
+
+def notify_error(error_type, error_message, request_id, lambda_request_id, stack_trace=None):
+    """
+    Notifica un error a través de SNS.
+    
+    Args:
+        error_type (str): Tipo de error
+        error_message (str): Mensaje de error
+        request_id (str): ID de la solicitud
+        lambda_request_id (str): ID de la ejecución de Lambda
+        stack_trace (str, opcional): Traza de la pila de ejecución
+    """
+    if not ERROR_TOPIC_ARN:
+        logger.warning("No se ha configurado ERROR_TOPIC_ARN. No se enviará notificación.")
+        return
+    
+    try:
+        message = {
+            "error_type": error_type,
+            "error_message": error_message,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "component": "file_processor_lambda",
+            "request_id": request_id,
+            "lambda_request_id": lambda_request_id
+        }
+        
+        if stack_trace:
+            message["stack_trace"] = stack_trace
+        
+        sns.publish(
+            TopicArn=ERROR_TOPIC_ARN,
+            Subject=f"Error en procesamiento de archivo - {error_type}",
+            Message=json.dumps(message, indent=2)
+        )
+        
+        logger.info(f"Notificación de error enviada a {ERROR_TOPIC_ARN}")
+    
+    except Exception as e:
+        logger.error(f"Error al enviar notificación: {str(e)}")
+
+def log_activity(action, details, request_id, context):
+    """
+    Registra actividad en S3 para auditoría.
+    
+    Args:
+        action (str): Tipo de acción realizada
+        details (dict): Detalles de la acción
+        request_id (str): ID de la solicitud
+        context (LambdaContext): Contexto de Lambda
+    """
+    try:
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        
+        activity_log = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": action,
+            "lambda_name": context.function_name,
+            "lambda_version": context.function_version,
+            "lambda_request_id": context.aws_request_id,
+            "request_id": request_id,
+            "details": details
+        }
+        
+        # Guardar log en S3
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=f"activity_logs/{today}/file_uploads/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{request_id}.json",
+            Body=json.dumps(activity_log),
+            ContentType='application/json'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error al registrar actividad: {str(e)}")
 
 def build_response(status_code, body):
     """
@@ -233,6 +380,8 @@ def build_response(status_code, body):
         'headers': {
             'Content-Type': 'application/json',
             'Access-Control-Allow-Origin': '*',  # Para CORS
+            'Access-Control-Allow-Headers': 'Content-Type,X-Amz-Date,Authorization,X-Api-Key,Origin,Accept',
+            'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
             'Access-Control-Allow-Credentials': 'true'
         },
         'body': json.dumps(body) if isinstance(body, dict) else json.dumps({'message': body})

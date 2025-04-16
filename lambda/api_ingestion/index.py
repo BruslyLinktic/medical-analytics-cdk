@@ -5,6 +5,7 @@ import requests
 import logging
 import datetime
 import uuid
+import traceback
 
 # Configuración de logging
 logger = logging.getLogger()
@@ -16,7 +17,8 @@ s3 = boto3.client('s3')
 # Configuración
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
 API_ENDPOINT = os.environ.get('API_ENDPOINT')
-API_KEY = os.environ.get('API_KEY')
+SECRET_NAME = os.environ.get('SECRET_NAME')  # Usamos secrets manager en lugar de hardcoded API_KEY
+ERROR_TOPIC_ARN = os.environ.get('ERROR_TOPIC_ARN', '')
 MAX_RETRIES = 3
 
 def handler(event, context):
@@ -39,13 +41,18 @@ def handler(event, context):
         timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         request_id = str(uuid.uuid4())
         
+        # Obtener API key desde Secrets Manager
+        api_key = get_api_key_from_secret()
+        
         # Intentar obtener datos de la API con reintentos
-        data = fetch_api_data(MAX_RETRIES)
+        data = fetch_api_data(api_key, MAX_RETRIES)
         
         if not data:
+            error_message = 'Error al obtener datos de la API después de reintentos'
+            notify_error(error_message, context.aws_request_id)
             return {
                 'statusCode': 500,
-                'body': json.dumps('Error al obtener datos de la API después de reintentos')
+                'body': json.dumps(error_message)
             }
         
         # Construir ruta de destino en S3
@@ -56,7 +63,12 @@ def handler(event, context):
             Bucket=BUCKET_NAME,
             Key=s3_key,
             Body=json.dumps(data),
-            ContentType='application/json'
+            ContentType='application/json',
+            Metadata={
+                'request-id': request_id,
+                'lambda-request-id': context.aws_request_id,
+                'source': 'api-ingestion'
+            }
         )
         
         logger.info(f"Datos guardados exitosamente en s3://{BUCKET_NAME}/{s3_key}")
@@ -67,7 +79,9 @@ def handler(event, context):
             'timestamp_fin': datetime.datetime.now().isoformat(),
             'registros_procesados': len(data) if isinstance(data, list) else 1,
             'errores': 0,
-            'request_id': request_id
+            'request_id': request_id,
+            'lambda_request_id': context.aws_request_id,
+            'api_endpoint': API_ENDPOINT  # No incluir la API key por seguridad
         }
         
         # Guardar metadatos en S3
@@ -76,6 +90,17 @@ def handler(event, context):
             Key=f"raw/api/{today}/{timestamp}_{request_id}_metadata.json",
             Body=json.dumps(metadata),
             ContentType='application/json'
+        )
+        
+        # Registrar actividad para auditoría
+        log_activity(
+            action="api_ingestion_success",
+            details={
+                "records_processed": metadata['registros_procesados'],
+                "s3_location": f"s3://{BUCKET_NAME}/{s3_key}"
+            },
+            request_id=request_id,
+            context=context
         )
         
         return {
@@ -88,27 +113,91 @@ def handler(event, context):
         }
     
     except Exception as e:
-        logger.error(f"Error en la ingesta de datos: {str(e)}")
+        # Capturar detalles del error
+        error_type = type(e).__name__
+        error_message = str(e)
+        stack_trace = traceback.format_exc()
+        
+        logger.error(f"Error en la ingesta de datos: {error_message}")
+        logger.error(f"Stack trace: {stack_trace}")
+        
+        # Notificar el error
+        notify_error(f"{error_type}: {error_message}", context.aws_request_id, stack_trace)
+        
+        # Registrar actividad de error
+        log_activity(
+            action="api_ingestion_error",
+            details={
+                "error_type": error_type,
+                "error_message": error_message
+            },
+            request_id=str(uuid.uuid4()),
+            context=context
+        )
+        
         return {
             'statusCode': 500,
             'body': json.dumps({
-                'message': f'Error: {str(e)}'
+                'message': f'Error: {error_message}',
+                'type': error_type,
+                'request_id': context.aws_request_id
             })
         }
 
-def fetch_api_data(max_retries):
+def get_api_key_from_secret():
+    """
+    Obtiene la API key desde AWS Secrets Manager.
+    
+    Returns:
+        str: API key recuperada
+    """
+    try:
+        # Obtener el secreto desde Secrets Manager
+        response = secretsmanager.get_secret_value(SecretId=SECRET_NAME)
+        
+        # El secreto podría estar en 'SecretString' o 'SecretBinary'
+        if 'SecretString' in response:
+            secret = response['SecretString']
+            if isinstance(secret, str):
+                try:
+                    # Intentar parsearlo como JSON
+                    secret_dict = json.loads(secret)
+                    # Buscar un campo estándar como "API_KEY" o usar la primera clave disponible
+                    if 'API_KEY' in secret_dict:
+                        return secret_dict['API_KEY']
+                    elif 'apiKey' in secret_dict:
+                        return secret_dict['apiKey']
+                    else:
+                        # Usar la primera clave como fallback
+                        return list(secret_dict.values())[0]
+                except json.JSONDecodeError:
+                    # Si no es JSON, usar el string completo
+                    return secret
+        
+        # Fallback a un valor por defecto para desarrollo (NUNCA usar en producción)
+        logger.warning("No se pudo obtener la API key desde Secrets Manager. Usando valor por defecto para DESARROLLO.")
+        return "dev-api-key-placeholder"
+    
+    except Exception as e:
+        logger.error(f"Error al obtener la API key desde Secrets Manager: {str(e)}")
+        # Fallback a un valor por defecto para desarrollo (NUNCA usar en producción)
+        return "dev-api-key-placeholder"
+
+def fetch_api_data(api_key, max_retries):
     """
     Obtiene datos de la API con reintentos en caso de fallo.
     
     Args:
+        api_key (str): API key para autenticación
         max_retries (int): Número máximo de reintentos
     
     Returns:
         dict/list: Datos obtenidos de la API
     """
     headers = {
-        'Authorization': f'Bearer {API_KEY}',
-        'Content-Type': 'application/json'
+        'Authorization': f'Bearer {api_key}',
+        'Content-Type': 'application/json',
+        'User-Agent': 'Medical-Analytics-Ingestion/1.0'
     }
     
     for attempt in range(max_retries):
@@ -126,3 +215,72 @@ def fetch_api_data(max_retries):
                 return None
     
     return None
+
+def notify_error(error_message, request_id, stack_trace=None):
+    """
+    Notifica un error a través de SNS.
+    
+    Args:
+        error_message (str): Mensaje de error
+        request_id (str): ID de la solicitud
+        stack_trace (str, opcional): Traza de la pila de ejecución
+    """
+    if not ERROR_TOPIC_ARN:
+        logger.warning("No se ha configurado ERROR_TOPIC_ARN. No se enviará notificación.")
+        return
+    
+    try:
+        message = {
+            "error": error_message,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "component": "api_ingestion_lambda",
+            "request_id": request_id
+        }
+        
+        if stack_trace:
+            message["stack_trace"] = stack_trace
+        
+        sns.publish(
+            TopicArn=ERROR_TOPIC_ARN,
+            Subject=f"Error en ingesta de API - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+            Message=json.dumps(message, indent=2)
+        )
+        
+        logger.info(f"Notificación de error enviada a {ERROR_TOPIC_ARN}")
+    
+    except Exception as e:
+        logger.error(f"Error al enviar notificación: {str(e)}")
+
+def log_activity(action, details, request_id, context):
+    """
+    Registra actividad en S3 para auditoría.
+    
+    Args:
+        action (str): Tipo de acción realizada
+        details (dict): Detalles de la acción
+        request_id (str): ID de la solicitud
+        context (LambdaContext): Contexto de Lambda
+    """
+    try:
+        today = datetime.datetime.now().strftime('%Y-%m-%d')
+        
+        activity_log = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "action": action,
+            "lambda_name": context.function_name,
+            "lambda_version": context.function_version,
+            "lambda_request_id": context.aws_request_id,
+            "request_id": request_id,
+            "details": details
+        }
+        
+        # Guardar log en S3
+        s3.put_object(
+            Bucket=BUCKET_NAME,
+            Key=f"activity_logs/{today}/api_ingestion/{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}_{request_id}.json",
+            Body=json.dumps(activity_log),
+            ContentType='application/json'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error al registrar actividad: {str(e)}")

@@ -40,7 +40,7 @@ class CDNStack(Stack):
         self._deploy_frontend_files(website_bucket, api_gateway_url, api_key_value)
         
         # 3. Crear la distribución de CloudFront
-        self.distribution = self._create_distribution(website_bucket, api_gateway_url)
+        self.distribution = self._create_distribution(website_bucket)
         
         # Outputs
         CfnOutput(self, "CloudFrontDomainName", value=self.distribution.domain_name)
@@ -54,15 +54,15 @@ class CDNStack(Stack):
         return s3.Bucket(
             self, 
             "MedicalAnalyticsFrontendBucket",
-            bucket_name="medical-analytics-frontend-dev",
-            website_index_document="index.html",
-            website_error_document="index.html",
+            bucket_name=f"medical-analytics-frontend-{self.account}-{self.region}",
             removal_policy=RemovalPolicy.DESTROY,
             auto_delete_objects=True,
             block_public_access=s3.BlockPublicAccess.BLOCK_ALL,  # Bloqueamos todo acceso público directo
+            encryption=s3.BucketEncryption.S3_MANAGED,  # Añadimos encriptación por defecto
+            enforce_ssl=True,  # Forzar conexiones SSL
             cors=[s3.CorsRule(
                 allowed_methods=[s3.HttpMethods.GET, s3.HttpMethods.HEAD],
-                allowed_origins=["*"],
+                allowed_origins=["*"],  # En producción, limitar a dominio específico de CloudFront
                 allowed_headers=["*"],
                 max_age=3000
             )]
@@ -92,10 +92,12 @@ class CDNStack(Stack):
             self, 
             "DeployMedicalAnalyticsFrontend",
             sources=[s3deploy.Source.asset(temp_dir)],
-            destination_bucket=bucket
+            destination_bucket=bucket,
+            content_type="text/html",  # Especificar el tipo de contenido
+            cache_control=[s3deploy.CacheControl.max_age(Duration.hours(1))]  # Control de caché
         )
 
-    def _create_distribution(self, frontend_bucket: s3.Bucket, api_gateway_url: str) -> cloudfront.Distribution:
+    def _create_distribution(self, frontend_bucket: s3.Bucket) -> cloudfront.Distribution:
         """
         Crea una distribución CloudFront y la configura para servir el frontend
         y permitir CORS adecuadamente.
@@ -104,7 +106,7 @@ class CDNStack(Stack):
         frontend_cache_policy = cloudfront.CachePolicy(
             self,
             "FrontendCachePolicy",
-            cache_policy_name="medical-analytics-frontend-cache",
+            cache_policy_name=f"medical-analytics-frontend-cache-{self.account}",
             comment="Cache policy for Medical Analytics Frontend",
             default_ttl=Duration.days(1),
             min_ttl=Duration.minutes(1),
@@ -120,7 +122,7 @@ class CDNStack(Stack):
         cors_origin_request_policy = cloudfront.OriginRequestPolicy(
             self,
             "CORSOriginRequestPolicy",
-            origin_request_policy_name="medical-analytics-cors-policy",
+            origin_request_policy_name=f"medical-analytics-cors-policy-{self.account}",
             comment="Policy to forward CORS headers to origin",
             cookie_behavior=cloudfront.OriginRequestCookieBehavior.none(),
             header_behavior=cloudfront.OriginRequestHeaderBehavior.allow_list(
@@ -135,15 +137,26 @@ class CDNStack(Stack):
         cors_response_policy = cloudfront.ResponseHeadersPolicy(
             self,
             "CORSResponsePolicy",
-            response_headers_policy_name="medical-analytics-cors-response",
+            response_headers_policy_name=f"medical-analytics-cors-response-{self.account}",
             comment="Policy to add CORS headers to responses",
             cors_behavior=cloudfront.ResponseHeadersCorsBehavior(
-                access_control_allow_credentials=True,
+                access_control_allow_credentials=False,  # Cambiado a False para evitar problemas con '*' origin
                 access_control_allow_headers=["Authorization", "Content-Type", "X-Api-Key", "Origin", "Accept"],
                 access_control_allow_methods=["GET", "POST", "OPTIONS"],
-                access_control_allow_origins=["http://localhost:3000", "https://medical-analytics-frontend-dev.s3-website.us-east-1.amazonaws.com"],
+                access_control_allow_origins=["*"],  # Simplificado a '*' para pruebas 
                 access_control_max_age=Duration.seconds(600),
                 origin_override=True
+            ),
+            security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
+                content_security_policy=cloudfront.ResponseHeadersContentSecurityPolicy(
+                    content_security_policy="default-src 'self'; img-src 'self' https://cdn-icons-png.flaticon.com; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net;",
+                    override=True
+                ),
+                strict_transport_security=cloudfront.ResponseHeadersStrictTransportSecurity(
+                    access_control_max_age=Duration.days(366),
+                    include_subdomains=True,
+                    override=True
+                )
             )
         )
 
@@ -154,10 +167,11 @@ class CDNStack(Stack):
             comment="OAI for Medical Analytics Frontend"
         )
 
-        # Permitir acceso desde CloudFront usando policy (más explícito)
-        # Primero, añadimos el permiso usando PolicyStatement que incluye el S3CanonicalUserId del OAI
+        # CLAVE: Permitir acceso desde CloudFront al bucket S3 usando una policy de bucket explícita
+        # Este es el paso crítico que debe estar correctamente configurado
         frontend_bucket.add_to_resource_policy(
             iam.PolicyStatement(
+                sid="AllowCloudFrontOAIAccess",
                 actions=["s3:GetObject"],
                 resources=[frontend_bucket.arn_for_objects("*")],
                 principals=[iam.CanonicalUserPrincipal(
@@ -166,7 +180,7 @@ class CDNStack(Stack):
             )
         )
         
-        # Segundo, añadimos un permiso usando el servicio principal de CloudFront
+        # Política adicional para el nuevo método de Origin Access Control
         frontend_bucket.add_to_resource_policy(
             iam.PolicyStatement(
                 sid="AllowCloudFrontServicePrincipal",
@@ -181,12 +195,12 @@ class CDNStack(Stack):
             )
         )
         
-        # También usar grant_read como respaldo
+        # También usar grant_read para mayor seguridad (enfoque por roles)
         frontend_bucket.grant_read(iam.CanonicalUserPrincipal(
             oai.cloud_front_origin_access_identity_s3_canonical_user_id
         ))
 
-        # Crear distribución CloudFront
+        # Crear distribución CloudFront con configuración más segura
         distribution = cloudfront.Distribution(
             self,
             "MedicalAnalyticsDistribution",
@@ -218,7 +232,8 @@ class CDNStack(Stack):
             ],
             price_class=cloudfront.PriceClass.PRICE_CLASS_100,  # Solo Norte América y Europa para reducir costos
             enabled=True,
-            comment="Distribution for Medical Analytics Frontend"
+            comment="Distribution for Medical Analytics Frontend",
+            minimum_protocol_version=cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021  # Forzar TLS moderno
         )
 
         return distribution

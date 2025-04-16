@@ -10,13 +10,17 @@ from aws_cdk import (
     aws_s3 as s3,
     aws_s3_deployment as s3deploy,
     aws_sns as sns,
-    aws_cloudfront as cloudfront,
-    aws_cloudfront_origins as origins,
+    aws_cloudwatch as cloudwatch,
+    aws_cloudwatch_actions as cloudwatch_actions,
+    aws_secretsmanager as secretsmanager,
+    aws_logs as logs,
     CfnOutput
 )
 from constructs import Construct
 import os
 import tempfile
+import uuid
+import json
 
 class IngestionStack(Stack):
     """
@@ -49,8 +53,8 @@ class IngestionStack(Stack):
         # 2. EventBridge para ejecución programada de la ingesta API
         self._create_api_ingestion_schedule(api_lambda)
         
-        # 3. API Gateway para Carga de Archivos
-        api_gateway, api_key_value = self._create_upload_api()
+        # 3. API Gateway para Carga de Archivos con secreto para la API key
+        api_gateway, api_key_secret = self._create_upload_api()
         
         # 4. Función Lambda para Procesamiento de Archivos
         file_processor_lambda = self._create_file_processor_lambda(
@@ -61,18 +65,45 @@ class IngestionStack(Stack):
         # 5. Integración de API Gateway con Lambda
         self._integrate_api_with_lambda(api_gateway, file_processor_lambda)
         
+        # 6. Implementar monitoreo y alarmas para las funciones Lambda
+        self._setup_monitoring(api_lambda, file_processor_lambda)
+        
         # Guardar referencias para uso externo
         self.api_gateway_url = api_gateway.url
-        self.api_key_value = api_key_value
+        self.api_key_secret = api_key_secret
         
         # Outputs
         CfnOutput(self, "ApiEndpoint", value=f"{api_gateway.url}")
-        CfnOutput(self, "ApiKeyOutput", value=api_key_value, description="API Key para usar en el frontend")
+        CfnOutput(self, "ApiKeySecretArn", value=api_key_secret.secret_arn)
+        # Agregamos una función para recuperar el valor de la API key (solo para desarrollo)
+        CfnOutput(self, "GetApiKeyCommand", value=f"aws secretsmanager get-secret-value --secret-id {api_key_secret.secret_name} --query 'SecretString' --output text")
 
     def _create_api_ingestion_lambda(self, bucket_name: str) -> lambda_.Function:
         """
         Crea la función Lambda para ingesta desde la API.
         """
+        # Crear grupo de logs con retención configurada
+        log_group = logs.LogGroup(
+            self,
+            "ApiIngestionLogGroup",
+            log_group_name="/aws/lambda/medical-analytics-api-ingestion",
+            removal_policy=RemovalPolicy.DESTROY,
+            retention=logs.RetentionDays.ONE_MONTH
+        )
+        
+        # Secret para la API key externa (en lugar de hard-coding)
+        external_api_key = secretsmanager.Secret(
+            self,
+            "ExternalApiKeySecret",
+            description="API Key para acceder a la API externa de datos médicos",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                exclude_punctuation=True,
+                include_space=False,
+                password_length=32
+            )
+        )
+        
+        # Lambda function con tracing activado y configuración mejorada
         lambda_fn = lambda_.Function(
             self, 
             "ApiIngestionFunction",
@@ -85,10 +116,16 @@ class IngestionStack(Stack):
             environment={
                 "BUCKET_NAME": bucket_name,
                 "API_ENDPOINT": "https://api.ejemplo.com/datos-medicos",  # Reemplazar con URL real
-                "API_KEY": "placeholder-api-key"  # En producción usar secretos
+                "SECRET_NAME": external_api_key.secret_name,  # Referencia al secreto, no la API key directamente
+                "ERROR_TOPIC_ARN": self.error_topic.topic_arn
             },
-            role=self.ingestion_role
+            role=self.ingestion_role,
+            tracing=lambda_.Tracing.ACTIVE,  # Habilitar AWS X-Ray
+            log_retention=logs.RetentionDays.ONE_MONTH
         )
+        
+        # Dar permiso a la Lambda para leer el secreto
+        external_api_key.grant_read(lambda_fn)
         
         return lambda_fn
 
@@ -152,32 +189,36 @@ class IngestionStack(Stack):
             targets=[targets.LambdaFunction(lambda_fn)]
         )
 
-    def _create_upload_api(self) -> tuple[apigw.RestApi, apigw.ApiKey]:
+    def _create_upload_api(self) -> tuple[apigw.RestApi, secretsmanager.Secret]:
         """
-        Crea la API Gateway para la carga de archivos.
+        Crea la API Gateway para la carga de archivos usando Secrets Manager para la API key.
         """
-        # Crear la API REST
+        # Crear la API REST con mejor configuración de seguridad
         api = apigw.RestApi(
             self, 
             "MedicalAnalyticsUploadApi",
             rest_api_name="medical-analytics-upload-api",
             description="API para carga de archivos Excel con datos médicos",
             default_cors_preflight_options=apigw.CorsOptions(
-                allow_origins=["*"],  # En producción, limitar a dominios específicos
+                allow_origins=["*"],  # En producción, limitar a dominio de CloudFront
                 allow_methods=["GET", "POST", "OPTIONS"],
                 allow_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "Origin", "Accept"],
                 allow_credentials=True,
-                max_age=Duration.seconds(300)  # Tiempo de caché para respuestas preflight
+                max_age=Duration.seconds(300)
             ),
             deploy_options=apigw.StageOptions(
                 stage_name="prod",
                 throttling_rate_limit=10,
                 throttling_burst_limit=20,
+                logging_level=apigw.MethodLoggingLevel.INFO,  # Activar logs para debug
+                metrics_enabled=True,  # Activar métricas de API Gateway
+                data_trace_enabled=True,  # Solo para desarrollo, deshabilitar en producción
             ),
-            binary_media_types=["multipart/form-data", "application/octet-stream"]  # Soporte para tipos binarios
+            binary_media_types=["multipart/form-data", "application/octet-stream"],
+            minimum_compression_size=1024,  # Comprimir respuestas de más de 1KB
         )
         
-        # Crear plan de uso y API key
+        # Crear plan de uso
         plan = api.add_usage_plan(
             "MedicalAnalyticsUsagePlan",
             name="medical-analytics-usage-plan",
@@ -186,30 +227,53 @@ class IngestionStack(Stack):
                 burst_limit=20
             ),
             quota=apigw.QuotaSettings(
-                limit=100,
-                period=apigw.Period.DAY
+                limit=1000,  # Aumentado a un valor más razonable
+                period=apigw.Period.MONTH
             )
         )
         
-        # Crear una API key con un valor que podamos conocer para desarrollo
-        # En producción, se debería usar otro método más seguro
-        api_key_value = "test-medical-analytics-key-123"
+        # Crear un secreto en Secrets Manager para la API key
+        api_key_secret = secretsmanager.Secret(
+            self,
+            "ApiKeySecret",
+            description="API Key para acceso a la API de carga de archivos médicos",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                exclude_punctuation=True,
+                include_space=False,
+                password_length=32
+            )
+        )
+        
+        # Recuperar el valor generado para la API key (esto crea una dependencia circular,
+        # pero es necesario para configurar correctamente la API key en API Gateway)
+        api_key_value = api_key_secret.secret_value.to_string()
+        
+        # Crear la API key con el valor del secreto
         api_key = api.add_api_key(
             "MedicalAnalyticsApiKey", 
             api_key_name="medical-analytics-api-key",
             value=api_key_value
         )
+        
+        # Agregar la API key al plan de uso
         plan.add_api_key(api_key)
         
-        # Crear una salida para obtener la API key
-        CfnOutput(self, "ApiKeyValue", value=api_key_value, description="API Key para usar en el frontend")
-        
-        return api, api_key_value
+        return api, api_key_secret
 
     def _create_file_processor_lambda(self, bucket_name: str, topic_arn: str) -> lambda_.Function:
         """
         Crea la función Lambda para procesamiento de archivos.
         """
+        # Crear grupo de logs con retención configurada
+        log_group = logs.LogGroup(
+            self,
+            "FileProcessorLogGroup",
+            log_group_name="/aws/lambda/medical-analytics-file-processor",
+            removal_policy=RemovalPolicy.DESTROY,
+            retention=logs.RetentionDays.ONE_MONTH
+        )
+        
+        # Lambda function con tracing activado y configuración mejorada
         lambda_fn = lambda_.Function(
             self, 
             "FileProcessorFunction",
@@ -223,7 +287,9 @@ class IngestionStack(Stack):
                 "BUCKET_NAME": bucket_name,
                 "ERROR_TOPIC_ARN": topic_arn
             },
-            role=self.ingestion_role
+            role=self.ingestion_role,
+            tracing=lambda_.Tracing.ACTIVE,  # Habilitar AWS X-Ray
+            log_retention=logs.RetentionDays.ONE_MONTH
         )
         
         return lambda_fn
@@ -244,7 +310,7 @@ class IngestionStack(Stack):
                 {
                     "statusCode": "200",
                     "responseParameters": {
-                        "method.response.header.Access-Control-Allow-Origin": "'*'",  # En producción, limitar a dominio CloudFront
+                        "method.response.header.Access-Control-Allow-Origin": "'*'",
                         "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,Origin,Accept'",
                         "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'",
                         "method.response.header.Access-Control-Allow-Credentials": "'true'"
@@ -317,9 +383,56 @@ class IngestionStack(Stack):
                 )
             ]
         )
+
+    def _setup_monitoring(self, api_lambda: lambda_.Function, file_processor_lambda: lambda_.Function) -> None:
+        """
+        Configura monitoreo y alarmas para las funciones Lambda.
+        """
+        # Alarma para errores en la función de ingesta API
+        api_errors_alarm = cloudwatch.Alarm(
+            self,
+            "ApiIngestionErrorsAlarm",
+            metric=api_lambda.metric_errors(),
+            threshold=1,
+            evaluation_periods=1,
+            alarm_description="Alarma por errores en la ingesta desde API",
+            alarm_name="MedicalAnalytics-ApiIngestion-Errors"
+        )
         
-        # No necesitamos agregar explícitamente el método OPTIONS para CORS
-        # porque API Gateway lo crea automáticamente cuando usamos default_cors_preflight_options
-        # en la definición del RestApi
-
-
+        # Asociar acción de alarma (notificación SNS)
+        api_errors_alarm.add_alarm_action(
+            cloudwatch_actions.SnsAction(self.error_topic)
+        )
+        
+        # Alarma para errores en la función de procesamiento de archivos
+        file_errors_alarm = cloudwatch.Alarm(
+            self,
+            "FileProcessorErrorsAlarm",
+            metric=file_processor_lambda.metric_errors(),
+            threshold=1,
+            evaluation_periods=1,
+            alarm_description="Alarma por errores en el procesamiento de archivos",
+            alarm_name="MedicalAnalytics-FileProcessor-Errors"
+        )
+        
+        # Asociar acción de alarma (notificación SNS)
+        file_errors_alarm.add_alarm_action(
+            cloudwatch_actions.SnsAction(self.error_topic)
+        )
+        
+        # Alarma por tiempos de ejecución largos (posibles problemas de rendimiento)
+        file_duration_alarm = cloudwatch.Alarm(
+            self,
+            "FileProcessorDurationAlarm",
+            metric=file_processor_lambda.metric_duration(),
+            threshold=25000,  # 25 segundos (de 30 máximos)
+            evaluation_periods=3,
+            datapoints_to_alarm=2,  # Requiere que 2 de 3 evaluaciones superen el umbral
+            alarm_description="Alarma por tiempos de procesamiento cercanos al timeout",
+            alarm_name="MedicalAnalytics-FileProcessor-LongDuration"
+        )
+        
+        # Asociar acción de alarma (notificación SNS)
+        file_duration_alarm.add_alarm_action(
+            cloudwatch_actions.SnsAction(self.error_topic)
+        )
