@@ -1,79 +1,181 @@
 # Sistema de Analítica Médica con AWS CDK
 
-Este proyecto implementa un sistema de analítica para datos médicos recolectados en campañas de salud, usando una arquitectura serverless implementada como código usando AWS CDK con Python.
+Este proyecto implementa un sistema completo de analítica para datos médicos recolectados en campañas de salud. Utiliza una arquitectura serverless implementada como código usando AWS CDK con Python.
+
+## Arquitectura del Sistema
+
+El sistema está dividido en varias capas:
+
+1. **Capa de Almacenamiento**: Bucket S3 con estructura organizada, encriptación y políticas de seguridad.
+2. **Capa de Ingesta**: API Gateway + Lambda para cargar archivos Excel y función programada para consumir API externa.
+3. **Capa de Procesamiento**: Trabajos ETL con AWS Glue (a implementar en fases posteriores).
+4. **Capa de Análisis**: Consultas con Athena y visualizaciones con QuickSight (a implementar en fases posteriores).
+5. **Capa de Distribución (CDN)**: CloudFront para servir el frontend de forma segura y con soporte CORS.
+
+## Requisitos Previos
+
+- [Python 3.9+](https://www.python.org/downloads/)
+- [AWS CLI](https://aws.amazon.com/cli/) configurado con credenciales adecuadas
+- [AWS CDK](https://aws.amazon.com/cdk/) instalado (`npm install -g aws-cdk`)
+- Virtualenv (`pip install virtualenv`)
+
+## Configuración Inicial
+
+1. Clonar el repositorio
+   ```bash
+   git clone <url-del-repositorio>
+   cd medical-analytics-cdk
+   ```
+
+2. Crear y activar entorno virtual
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # En Windows: venv\Scripts\activate
+   ```
+
+3. Instalar dependencias
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Arrancar la aplicación CDK (solo primera vez)
+   ```bash
+   cdk bootstrap
+   ```
 
 ## Estructura del Proyecto
 
-El proyecto está organizado por fases:
-
-1. **Fase 1**: Configuración de proyecto y capa de almacenamiento
-2. **Fase 2**: Implementación de la capa de ingesta de datos
-3. **Fase 3**: Implementación de la capa de procesamiento ETL
-4. **Fase 4**: Implementación de la capa de análisis y visualización
-5. **Fase 5**: Implementación de monitoreo y seguridad
-6. **Fase 6**: Documentación, pruebas y despliegue
-
-## Requisitos
-
-- Python >= 3.9 (recomendado 3.9+)
-- AWS CDK >= 2.119.0
-- AWS CLI configurado con permisos adecuados
-- Node.js >= 14 (requerido por CDK)
-
-## Instalación rápida
-
-```bash
-# Asegúrate de tener instalado Python 3.9+ y Git
-
-# Dar permisos al script de instalación y ejecutarlo
-chmod +x setup_env.sh
-./setup_env.sh
-
-# Activar el entorno virtual
-source venv/bin/activate
 ```
-
-## Instalación manual
-
-```bash
-# Crear entorno virtual (Si python3 no funciona, prueba con python)
-python3 -m venv venv
-source venv/bin/activate  # En Windows: venv\Scripts\activate
-
-# Instalar dependencias
-pip install --upgrade pip
-pip install -r requirements.txt
+medical-analytics-cdk/
+├── app.py                      # Punto de entrada principal de CDK
+├── deploy.py                   # Script personalizado para despliegue
+├── test_cors.py                # Herramienta para probar configuración CORS
+├── medical_analytics/          # Módulos del proyecto
+│   ├── storage_stack.py        # Stack de almacenamiento
+│   ├── ingestion_stack.py      # Stack de ingesta
+│   └── cdn_stack/              # Stack de CDN (CloudFront)
+│       └── cdn_stack.py        # Implementación del stack de CDN
+├── lambda/                     # Código para funciones Lambda
+│   ├── api_ingestion/          # Lambda para consumir API externa
+│   └── file_processor/         # Lambda para procesar archivos subidos
+└── frontend/                   # Frontend para carga de archivos
+    └── index.html              # Interfaz web simple
 ```
-
-## Solución de problemas
-
-Si encuentras problemas durante la instalación o ejecución:
-
-```bash
-# Verificar y corregir dependencias (si tienes problemas con módulos)
-./fix_dependencies.sh
-
-# Probar si el proyecto compila correctamente
-./test_synth.sh
-```
-
-Consulta el archivo [TROUBLESHOOTING.md](./TROUBLESHOOTING.md) para soluciones detalladas a problemas comunes.
 
 ## Despliegue
 
+### Despliegue Automatizado (Recomendado)
+
+Usar el script de despliegue automatizado:
+
 ```bash
-# Verificar que el entorno virtual esté activado (venv)
+# Dar permisos de ejecución al script
+chmod +x deploy.py
 
-# Sintetizar la aplicación CDK
-cdk synth
+# Desplegar todos los stacks en ambiente dev
+./deploy.py --stage dev
 
-# Desplegar un stack específico (recomendado para la primera vez)
-cdk deploy medical-analytics-storage-dev
-
-# O desplegar todos los stacks
-cdk deploy --all
+# Opciones avanzadas
+./deploy.py --help
 ```
 
-## Documentación
+### Despliegue Manual
 
-Consulta la carpeta `docs/` para más detalles sobre la arquitectura y funcionamiento del sistema.
+Para desplegar manualmente los stacks:
+
+```bash
+# Desplegar stack de almacenamiento
+cdk deploy medical-analytics-storage-dev
+
+# Desplegar stack de ingesta
+cdk deploy medical-analytics-ingestion-dev
+
+# Desplegar stack de CDN
+cdk deploy medical-analytics-cdn-dev
+```
+
+## Pruebas de CORS
+
+Una vez desplegado el sistema, puedes verificar la configuración CORS usando:
+
+```bash
+# Dar permisos de ejecución al script
+chmod +x test_cors.py
+
+# Probar la configuración CORS (reemplazar con la URL real)
+./test_cors.py https://tu-api-id.execute-api.us-east-1.amazonaws.com/prod/upload --api-key tu-api-key
+```
+
+## Acceso al Frontend
+
+Una vez completado el despliegue, el frontend estará disponible a través de CloudFront. La URL se mostrará en las salidas del despliegue:
+
+```bash
+# Ver las salidas del stack de CDN
+aws cloudformation describe-stacks --stack-name medical-analytics-cdn-dev --query "Stacks[0].Outputs[?OutputKey=='CloudFrontURL'].OutputValue" --output text
+```
+
+## Solución de Problemas Comunes
+
+### Bucket S3 ya existe
+
+Si el bucket S3 ya existe, tienes dos opciones:
+
+1. Eliminar el bucket existente:
+   ```bash
+   aws s3 rb s3://medical-analytics-project-dev --force
+   ```
+
+2. Cambiar el nombre del bucket en el código (`storage_stack.py`):
+   ```python
+   bucket = s3.Bucket(
+       self,
+       "MedicalAnalyticsBucket",
+       bucket_name="medical-analytics-project-dev-unique",  # Cambiar nombre
+       # Otras propiedades...
+   )
+   ```
+
+### Problemas con CORS o Acceso a CloudFront
+
+Si encuentras problemas de CORS al usar el frontend:
+
+1. Verifica que estás accediendo a través de la URL de CloudFront (no directamente al bucket S3)
+2. Usa la herramienta `test_cors.py` para diagnosticar problemas
+3. Asegúrate que en el frontend se está utilizando la API Key correcta
+
+### Error 403 Forbidden en CloudFront
+
+Si recibes un error "403 Forbidden" al acceder a la URL de CloudFront:
+
+1. Ejecuta el script de corrección de permisos:
+   ```bash
+   # Dar permisos de ejecución al script
+   chmod +x fix_cloudfront.sh
+   
+   # Ejecutar el script
+   ./fix_cloudfront.sh
+   ```
+
+2. Este script corrige la configuración de permisos entre CloudFront y el bucket S3 que aloja el frontend.
+
+3. Si el problema persiste, consulta la sección correspondiente en `TROUBLESHOOTING.md` para más detalles.
+
+## Limpieza
+
+Para eliminar todos los recursos desplegados:
+
+```bash
+cdk destroy --all
+```
+
+Nota: La eliminación de algunos recursos (como los buckets S3) puede requerir pasos adicionales si contienen datos.
+
+## Siguientes Pasos
+
+Este despliegue implementa las Fases 1, 2 y parte de la 6 del plan de proyecto. Las próximas fases incluirán:
+
+- Implementación de la capa de procesamiento ETL (Fase 3)
+- Implementación de la capa de análisis y visualización (Fase 4)
+- Implementación de monitoreo y seguridad (Fase 5)
+- Completar la documentación y pruebas (Fase 6)

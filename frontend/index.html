@@ -130,6 +130,9 @@
             // URL de la API (se reemplazará en tiempo de despliegue)
             const API_URL = '{{API_ENDPOINT}}';
             
+            // URL de CloudFront (se establecerá después del despliegue)
+            // Esto permite facilitar las pruebas
+            
             // Evento para el botón de examinar
             browseBtn.addEventListener('click', function() {
                 fileInput.click();
@@ -261,8 +264,11 @@
                     // Enviar archivo a la API
                     fetch(API_URL, {
                         method: 'POST',
+                        mode: 'cors', // Importante para CORS
+                        credentials: 'include', // Incluir credenciales si es necesario
                         headers: {
-                            'Content-Type': 'application/json'
+                            'Content-Type': 'application/json',
+                            'x-api-key': '{{API_KEY}}' // Se reemplazará en tiempo de despliegue
                         },
                         body: JSON.stringify(data)
                     })

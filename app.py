@@ -5,6 +5,7 @@ import aws_cdk as cdk
 
 from medical_analytics.storage_stack import StorageStack
 from medical_analytics.ingestion_stack import IngestionStack
+from medical_analytics.cdn_stack.cdn_stack import CDNStack
 
 app = cdk.App()
 
@@ -45,11 +46,22 @@ ingestion_stack = IngestionStack(
     description="Stack de ingesta para el sistema de analítica médica"
 )
 
-# Definir dependencia explícita
+# Despliegue del stack de CDN - ahora creamos el frontend dentro de este stack
+cdn_stack = CDNStack(
+    app,
+    "medical-analytics-cdn-dev",
+    api_gateway_url=ingestion_stack.api_gateway_url,
+    api_key_value=ingestion_stack.api_key_value,
+    env=env,
+    description="Stack de CDN para la interfaz web del sistema de analítica médica"
+)
+
+# Definir dependencias explícitas
 ingestion_stack.add_dependency(storage_stack)
+cdn_stack.add_dependency(ingestion_stack)
 
 # Aplicar tags a todos los recursos del stack
-for stack in [storage_stack, ingestion_stack]:
+for stack in [storage_stack, ingestion_stack, cdn_stack]:
     for key, value in tags.items():
         cdk.Tags.of(stack).add(key, value)
 

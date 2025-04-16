@@ -2,6 +2,37 @@
 
 Este documento contiene soluciones para problemas comunes que puedes encontrar al configurar y ejecutar el proyecto.
 
+## Problemas con CloudFront y S3
+
+### Error: "403 Forbidden" al acceder a la interfaz web a través de CloudFront
+
+**Síntoma**: Al intentar acceder a la URL de CloudFront, recibes un error 403 Forbidden (AccessDenied).
+
+**Solución**:
+Este error generalmente ocurre porque CloudFront no tiene los permisos adecuados para acceder a los objetos del bucket S3.
+
+1. Ejecuta el script de corrección de permisos:
+   ```bash
+   ./fix_cloudfront.sh
+   ```
+
+2. Este script realizará las siguientes acciones:
+   - Identifica la distribución de CloudFront relacionada con el proyecto
+   - Obtiene el OAI (Origin Access Identity) configurado
+   - Actualiza la política del bucket S3 para permitir acceso explícito a CloudFront
+   - Configura correctamente CORS para el bucket
+
+3. Si el script no resuelve el problema, verifica manualmente:
+   - Que el OAI esté correctamente configurado en CloudFront
+   - Que la política del bucket permita acceso al OAI
+   - Que los objetos del bucket no tengan ACLs restrictivas
+
+4. En caso de problemas persistentes, puedes reiniciar el proceso completo:
+   ```bash
+   cdk destroy medical-analytics-cdn-dev
+   cdk deploy medical-analytics-cdn-dev
+   ```
+
 ## Problemas con la importación de módulos AWS CDK
 
 ### Error: "No module named 'aws_cdk_lib'"
