@@ -11,6 +11,7 @@ El sistema está dividido en varias capas:
 3. **Capa de Procesamiento**: Trabajos ETL con AWS Glue (a implementar en fases posteriores).
 4. **Capa de Análisis**: Consultas con Athena y visualizaciones con QuickSight (a implementar en fases posteriores).
 5. **Capa de Distribución (CDN)**: CloudFront para servir el frontend de forma segura y con soporte CORS.
+6. **Capa de Lambda Layers**: Gestión de dependencias como pandas para las funciones Lambda.
 
 ## Requisitos Previos
 
@@ -48,16 +49,21 @@ El sistema está dividido en varias capas:
 ```
 medical-analytics-cdk/
 ├── app.py                      # Punto de entrada principal de CDK
-├── deploy.py                   # Script personalizado para despliegue
-├── test_cors.py                # Herramienta para probar configuración CORS
+├── scripts/                    # Scripts de utilidad para el proyecto
+│   ├── deploy.sh               # Script automatizado de despliegue
+│   └── fix_cloudfront_permissions.py  # Script para corrección de permisos
 ├── medical_analytics/          # Módulos del proyecto
 │   ├── storage_stack.py        # Stack de almacenamiento
 │   ├── ingestion_stack.py      # Stack de ingesta
+│   ├── lambda_layer_stack.py   # Stack de capas Lambda
 │   └── cdn_stack/              # Stack de CDN (CloudFront)
 │       └── cdn_stack.py        # Implementación del stack de CDN
 ├── lambda/                     # Código para funciones Lambda
 │   ├── api_ingestion/          # Lambda para consumir API externa
 │   └── file_processor/         # Lambda para procesar archivos subidos
+├── layers/                     # Definiciones de Lambda Layers
+│   ├── pandas_layer/           # Layer para pandas y dependencias de Excel
+│   └── common_layer/           # Layer para dependencias comunes
 └── frontend/                   # Frontend para carga de archivos
     └── index.html              # Interfaz web simple
 ```
@@ -70,13 +76,13 @@ Usar el script de despliegue automatizado:
 
 ```bash
 # Dar permisos de ejecución al script
-chmod +x deploy.py
+chmod +x scripts/deploy.sh
 
 # Desplegar todos los stacks en ambiente dev
-./deploy.py --stage dev
+./scripts/deploy.sh
 
 # Opciones avanzadas
-./deploy.py --help
+./scripts/deploy.sh --help
 ```
 
 ### Despliegue Manual
@@ -84,6 +90,9 @@ chmod +x deploy.py
 Para desplegar manualmente los stacks:
 
 ```bash
+# Desplegar stack de Lambda Layers (debe ir primero)
+cdk deploy medical-analytics-layers-dev
+
 # Desplegar stack de almacenamiento
 cdk deploy medical-analytics-storage-dev
 
@@ -92,18 +101,6 @@ cdk deploy medical-analytics-ingestion-dev
 
 # Desplegar stack de CDN
 cdk deploy medical-analytics-cdn-dev
-```
-
-## Pruebas de CORS
-
-Una vez desplegado el sistema, puedes verificar la configuración CORS usando:
-
-```bash
-# Dar permisos de ejecución al script
-chmod +x test_cors.py
-
-# Probar la configuración CORS (reemplazar con la URL real)
-./test_cors.py https://tu-api-id.execute-api.us-east-1.amazonaws.com/prod/upload --api-key tu-api-key
 ```
 
 ## Acceso al Frontend
@@ -115,7 +112,30 @@ Una vez completado el despliegue, el frontend estará disponible a través de Cl
 aws cloudformation describe-stacks --stack-name medical-analytics-cdn-dev --query "Stacks[0].Outputs[?OutputKey=='CloudFrontURL'].OutputValue" --output text
 ```
 
+## API Key para el Frontend
+
+Para obtener la API Key necesaria para el frontend:
+
+```bash
+# Ver el comando para obtener la API Key
+aws cloudformation describe-stacks --stack-name medical-analytics-ingestion-dev --query "Stacks[0].Outputs[?OutputKey=='GetApiKeyCommand'].OutputValue" --output text | bash
+```
+
 ## Solución de Problemas Comunes
+
+### Problema con Dependencias en Lambda
+
+Las dependencias externas como pandas están incluidas en Lambda Layers. Si encuentras errores relacionados con módulos que faltan:
+
+1. Verifica que el stack de Lambda Layers se haya desplegado correctamente:
+   ```bash
+   aws cloudformation describe-stacks --stack-name medical-analytics-layers-dev
+   ```
+
+2. Comprueba que las Lambdas estén configuradas para usar las capas (layers):
+   ```bash
+   aws lambda get-function --function-name medical-analytics-file-processor --query "Configuration.Layers"
+   ```
 
 ### Bucket S3 ya existe
 
@@ -131,7 +151,7 @@ Si el bucket S3 ya existe, tienes dos opciones:
    bucket = s3.Bucket(
        self,
        "MedicalAnalyticsBucket",
-       bucket_name="medical-analytics-project-dev-unique",  # Cambiar nombre
+       bucket_name=f"medical-analytics-project-{self.account}-{self.region}",  # Nombre único
        # Otras propiedades...
    )
    ```
@@ -141,25 +161,31 @@ Si el bucket S3 ya existe, tienes dos opciones:
 Si encuentras problemas de CORS al usar el frontend:
 
 1. Verifica que estás accediendo a través de la URL de CloudFront (no directamente al bucket S3)
-2. Usa la herramienta `test_cors.py` para diagnosticar problemas
-3. Asegúrate que en el frontend se está utilizando la API Key correcta
+2. Comprueba que las cabeceras CORS estén configuradas correctamente en API Gateway
 
 ### Error 403 Forbidden en CloudFront
 
-Si recibes un error "403 Forbidden" al acceder a la URL de CloudFront:
+Si recibes un error "403 Forbidden" al acceder a la URL de CloudFront, el stack de CDN ha sido mejorado para configurar correctamente los permisos OAI. Si aún persisten problemas:
 
-1. Ejecuta el script de corrección de permisos:
+1. Verifica la política del bucket para el frontend:
    ```bash
-   # Dar permisos de ejecución al script
-   chmod +x fix_cloudfront.sh
-   
-   # Ejecutar el script
-   ./fix_cloudfront.sh
+   aws s3api get-bucket-policy --bucket nombre-del-bucket-frontend
    ```
 
-2. Este script corrige la configuración de permisos entre CloudFront y el bucket S3 que aloja el frontend.
+2. Comprueba la configuración del OAI en CloudFront:
+   ```bash
+   aws cloudfront get-distribution --id ID-DE-DISTRIBUCION
+   ```
 
-3. Si el problema persiste, consulta la sección correspondiente en `TROUBLESHOOTING.md` para más detalles.
+## Seguridad
+
+Este proyecto implementa varias mejoras de seguridad:
+
+1. **Encriptación**: Todos los datos en S3 están encriptados usando KMS o encriptación S3 gestionada.
+2. **Secretos**: Las API keys se gestionan con AWS Secrets Manager.
+3. **HTTPS**: Todo el tráfico externo es HTTPS mediante CloudFront.
+4. **IAM**: Roles con privilegios mínimos siguiendo el principio de menor privilegio.
+5. **Monitoreo**: Alarmas CloudWatch para detección de errores y comportamientos anómalos.
 
 ## Limpieza
 
@@ -177,5 +203,5 @@ Este despliegue implementa las Fases 1, 2 y parte de la 6 del plan de proyecto. 
 
 - Implementación de la capa de procesamiento ETL (Fase 3)
 - Implementación de la capa de análisis y visualización (Fase 4)
-- Implementación de monitoreo y seguridad (Fase 5)
+- Implementación de monitoreo y seguridad avanzados (Fase 5)
 - Completar la documentación y pruebas (Fase 6)

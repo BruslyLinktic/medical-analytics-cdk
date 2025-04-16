@@ -5,6 +5,7 @@ import aws_cdk as cdk
 from aws_cdk import aws_secretsmanager as secretsmanager
 
 from medical_analytics.storage_stack import StorageStack
+from medical_analytics.lambda_layer_stack import LambdaLayerStack
 from medical_analytics.ingestion_stack import IngestionStack
 from medical_analytics.cdn_stack.cdn_stack import CDNStack
 
@@ -23,6 +24,14 @@ tags = {
     'Owner': 'MedicalAnalyticsTeam'
 }
 
+# Despliegue del stack de Lambda Layers (debe ir primero para poder ser referenciado)
+lambda_layer_stack = LambdaLayerStack(
+    app,
+    "medical-analytics-layers-dev",
+    env=env,
+    description="Stack de Lambda Layers para el sistema de analítica médica"
+)
+
 # Despliegue del stack de almacenamiento
 storage_stack = StorageStack(
     app, 
@@ -35,7 +44,7 @@ storage_stack = StorageStack(
 # Esto evita dependencias cíclicas
 sns_topic = storage_stack.create_error_topic("MedicalAnalyticsErrorTopic")
 
-# Despliegue del stack de ingesta
+# Despliegue del stack de ingesta (ahora con referencia a los layers)
 ingestion_stack = IngestionStack(
     app,
     "medical-analytics-ingestion-dev",
@@ -43,6 +52,8 @@ ingestion_stack = IngestionStack(
     storage_key_arn=storage_stack.encryption_key_arn,
     ingestion_role=storage_stack.ingestion_role,
     error_topic=sns_topic,
+    pandas_layer=lambda_layer_stack.pandas_layer,
+    common_layer=lambda_layer_stack.common_layer,
     env=env,
     description="Stack de ingesta para el sistema de analítica médica"
 )
@@ -72,11 +83,13 @@ cdn_stack = CDNStack(
 )
 
 # Definir dependencias explícitas
+storage_stack.add_dependency(lambda_layer_stack)  # Storage necesita los layers para sus roles
 ingestion_stack.add_dependency(storage_stack)
+ingestion_stack.add_dependency(lambda_layer_stack)
 cdn_stack.add_dependency(ingestion_stack)
 
 # Aplicar tags a todos los recursos del stack
-for stack in [storage_stack, ingestion_stack, cdn_stack]:
+for stack in [lambda_layer_stack, storage_stack, ingestion_stack, cdn_stack]:
     for key, value in tags.items():
         cdk.Tags.of(stack).add(key, value)
 

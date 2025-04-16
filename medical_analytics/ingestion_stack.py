@@ -37,6 +37,8 @@ class IngestionStack(Stack):
         storage_key_arn: str,
         ingestion_role: iam.Role,
         error_topic: sns.Topic,
+        pandas_layer: lambda_.LayerVersion,
+        common_layer: lambda_.LayerVersion,
         **kwargs
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -46,6 +48,8 @@ class IngestionStack(Stack):
         self.encryption_key_arn = storage_key_arn
         self.error_topic = error_topic
         self.ingestion_role = ingestion_role
+        self.pandas_layer = pandas_layer
+        self.common_layer = common_layer
 
         # 1. Implementación de Componente de Ingesta API
         api_lambda = self._create_api_ingestion_lambda(storage_bucket.bucket_name)
@@ -104,6 +108,7 @@ class IngestionStack(Stack):
         )
         
         # Lambda function con tracing activado y configuración mejorada
+        # Ahora incluyendo las capas (layers) para las dependencias
         lambda_fn = lambda_.Function(
             self, 
             "ApiIngestionFunction",
@@ -121,7 +126,8 @@ class IngestionStack(Stack):
             },
             role=self.ingestion_role,
             tracing=lambda_.Tracing.ACTIVE,  # Habilitar AWS X-Ray
-            log_retention=logs.RetentionDays.ONE_MONTH
+            log_retention=logs.RetentionDays.ONE_MONTH,
+            layers=[self.common_layer]  # Añadir capa con dependencias comunes
         )
         
         # Dar permiso a la Lambda para leer el secreto
@@ -274,6 +280,7 @@ class IngestionStack(Stack):
         )
         
         # Lambda function con tracing activado y configuración mejorada
+        # Incluye la capa de pandas para procesamiento de Excel
         lambda_fn = lambda_.Function(
             self, 
             "FileProcessorFunction",
@@ -289,7 +296,8 @@ class IngestionStack(Stack):
             },
             role=self.ingestion_role,
             tracing=lambda_.Tracing.ACTIVE,  # Habilitar AWS X-Ray
-            log_retention=logs.RetentionDays.ONE_MONTH
+            log_retention=logs.RetentionDays.ONE_MONTH,
+            layers=[self.pandas_layer, self.common_layer]  # Añadir capas con dependencias
         )
         
         return lambda_fn
