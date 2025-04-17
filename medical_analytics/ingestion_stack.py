@@ -12,7 +12,6 @@ from aws_cdk import (
     aws_sns as sns,
     aws_cloudwatch as cloudwatch,
     aws_cloudwatch_actions as cloudwatch_actions,
-    aws_secretsmanager as secretsmanager,
     aws_logs as logs,
     CfnOutput
 )
@@ -74,13 +73,10 @@ class IngestionStack(Stack):
         
         # Guardar referencias para uso externo
         self.api_gateway_url = api_gateway.url
-        self.api_key_secret = api_key_secret
         
-        # Outputs
+        # Outputs - API Gateway y comandos para obtener API Key
         CfnOutput(self, "ApiEndpoint", value=f"{api_gateway.url}")
-        CfnOutput(self, "ApiKeySecretArn", value=api_key_secret.secret_arn)
-        # Agregamos una función para recuperar el valor de la API key (solo para desarrollo)
-        CfnOutput(self, "GetApiKeyCommand", value=f"aws secretsmanager get-secret-value --secret-id {api_key_secret.secret_name} --query 'SecretString' --output text")
+        CfnOutput(self, "GetGeneratedApiKeyCommand", value="aws apigateway get-api-keys --name-query medical-analytics-api-key --include-values --query 'items[0].value' --output text")
 
     def _create_api_ingestion_lambda(self, bucket_name: str) -> lambda_.Function:
         """
@@ -95,17 +91,21 @@ class IngestionStack(Stack):
             retention=logs.RetentionDays.ONE_MONTH
         )
         
-        # Secret para la API key externa (en lugar de hard-coding)
-        external_api_key = secretsmanager.Secret(
-            self,
-            "ExternalApiKeySecret",
-            description="API Key para acceder a la API externa de datos médicos",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                exclude_punctuation=True,
-                include_space=False,
-                password_length=32
-            )
-        )
+        # # Secret para la API key externa (en lugar de hard-coding)
+        # # Comentado temporalmente para evitar referencia circular
+        # external_api_key = secretsmanager.Secret(
+        #     self,
+        #     "ExternalApiKeySecret",
+        #     description="API Key para acceder a la API externa de datos médicos",
+        #     generate_secret_string=secretsmanager.SecretStringGenerator(
+        #         exclude_punctuation=True,
+        #         include_space=False,
+        #         password_length=32
+        #     )
+        # )
+        
+        # Usamos un valor hardcoded para desarrollo en lugar del secreto
+        # Esto se cambiará por un secreto después de la prueba de concepto
         
         # Lambda function con tracing activado y configuración mejorada
         # Ahora incluyendo las capas (layers) para las dependencias
@@ -121,7 +121,7 @@ class IngestionStack(Stack):
             environment={
                 "BUCKET_NAME": bucket_name,
                 "API_ENDPOINT": "https://api.ejemplo.com/datos-medicos",  # Reemplazar con URL real
-                "SECRET_NAME": external_api_key.secret_name,  # Referencia al secreto, no la API key directamente
+                "API_KEY": "dev-temp-api-key",  # Valor temporal para desarrollo
                 "ERROR_TOPIC_ARN": self.error_topic.topic_arn
             },
             role=self.ingestion_role,
@@ -130,8 +130,13 @@ class IngestionStack(Stack):
             layers=[self.common_layer]  # Añadir capa con dependencias comunes
         )
         
-        # Dar permiso a la Lambda para leer el secreto
-        external_api_key.grant_read(lambda_fn)
+        # No necesitamos dar permisos para Secrets Manager por ahora
+        # lambda_fn.add_to_role_policy(
+        #     iam.PolicyStatement(
+        #         actions=["secretsmanager:GetSecretValue"],
+        #         resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:ExternalApiKeySecret*"]
+        #     )
+        # )
         
         return lambda_fn
 
@@ -195,9 +200,9 @@ class IngestionStack(Stack):
             targets=[targets.LambdaFunction(lambda_fn)]
         )
 
-    def _create_upload_api(self) -> tuple[apigw.RestApi, secretsmanager.Secret]:
+    def _create_upload_api(self) -> tuple[apigw.RestApi, None]:
         """
-        Crea la API Gateway para la carga de archivos usando Secrets Manager para la API key.
+        Crea la API Gateway para la carga de archivos.
         """
         # Crear la API REST con mejor configuración de seguridad
         api = apigw.RestApi(
@@ -238,33 +243,16 @@ class IngestionStack(Stack):
             )
         )
         
-        # Crear un secreto en Secrets Manager para la API key
-        api_key_secret = secretsmanager.Secret(
-            self,
-            "ApiKeySecret",
-            description="API Key para acceso a la API de carga de archivos médicos",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                exclude_punctuation=True,
-                include_space=False,
-                password_length=32
-            )
-        )
-        
-        # Recuperar el valor generado para la API key (esto crea una dependencia circular,
-        # pero es necesario para configurar correctamente la API key en API Gateway)
-        api_key_value = api_key_secret.secret_value.to_string()
-        
-        # Crear la API key con el valor del secreto
+        # Crear la API key con un valor generado automáticamente por API Gateway
         api_key = api.add_api_key(
             "MedicalAnalyticsApiKey", 
-            api_key_name="medical-analytics-api-key",
-            value=api_key_value
+            api_key_name="medical-analytics-api-key"
         )
         
         # Agregar la API key al plan de uso
         plan.add_api_key(api_key)
         
-        return api, api_key_secret
+        return api, None  # Retornamos None como segundo valor para mantener la consistencia de la interfaz
 
     def _create_file_processor_lambda(self, bucket_name: str, topic_arn: str) -> lambda_.Function:
         """

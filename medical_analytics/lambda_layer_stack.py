@@ -6,7 +6,7 @@ from aws_cdk import (
     aws_s3 as s3,
     CfnOutput
 )
-import aws_cdk.aws_lambda_python_alpha as lambda_python
+# import aws_cdk.aws_lambda_python_alpha as lambda_python  # No se usa más para evitar dependencia de Docker
 from constructs import Construct
 import os
 
@@ -37,11 +37,17 @@ class LambdaLayerStack(Stack):
         """
         Crea un Lambda Layer para pandas y dependencias relacionadas.
         """
-        # Utilizar lambda-python-alpha para crear un layer de Python
-        return lambda_python.PythonLayerVersion(
+        # Comprobar si existe el archivo de la capa preempaquetada
+        layer_path = "packaged_layers/pandas_layer.zip"
+        if not os.path.exists(layer_path):
+            # Si no existe, mostrar mensaje de error con instrucciones
+            raise Exception(f"La capa '{layer_path}' no existe. Ejecuta primero './packaged_layers/layer-builder.sh' para empaquetar las capas sin Docker.")
+        
+        # Crear un lambda layer utilizando el archivo preempaquetado (sin Docker)
+        return lambda_.LayerVersion(
             self,
             "PandasLayer",
-            entry="layers/pandas_layer",  # Directorio con requirements.txt
+            code=lambda_.Code.from_asset(layer_path),
             compatible_runtimes=[
                 lambda_.Runtime.PYTHON_3_9,
                 lambda_.Runtime.PYTHON_3_8
@@ -54,11 +60,17 @@ class LambdaLayerStack(Stack):
         """
         Crea un Lambda Layer para dependencias comunes como boto3, requests, etc.
         """
-        # Utilizar lambda-python-alpha para crear un layer de Python
-        return lambda_python.PythonLayerVersion(
+        # Comprobar si existe el archivo de la capa preempaquetada
+        layer_path = "packaged_layers/common_layer.zip"
+        if not os.path.exists(layer_path):
+            # Si no existe, mostrar mensaje de error con instrucciones
+            raise Exception(f"La capa '{layer_path}' no existe. Ejecuta primero './packaged_layers/layer-builder.sh' para empaquetar las capas sin Docker.")
+        
+        # Crear un lambda layer utilizando el archivo preempaquetado (sin Docker)
+        return lambda_.LayerVersion(
             self,
             "CommonLayer",
-            entry="layers/common_layer",  # Directorio con requirements.txt
+            code=lambda_.Code.from_asset(layer_path),
             compatible_runtimes=[
                 lambda_.Runtime.PYTHON_3_9,
                 lambda_.Runtime.PYTHON_3_8

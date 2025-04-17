@@ -13,11 +13,12 @@ logger.setLevel(logging.INFO)
 
 # Inicializar clientes de AWS
 s3 = boto3.client('s3')
+# Otros clientes se inicializan cuando se necesitan
 
 # Configuración
 BUCKET_NAME = os.environ.get('BUCKET_NAME')
 API_ENDPOINT = os.environ.get('API_ENDPOINT')
-SECRET_NAME = os.environ.get('SECRET_NAME')  # Usamos secrets manager en lugar de hardcoded API_KEY
+API_KEY = os.environ.get('API_KEY')  # API key hardcoded para desarrollo
 ERROR_TOPIC_ARN = os.environ.get('ERROR_TOPIC_ARN', '')
 MAX_RETRIES = 3
 
@@ -41,8 +42,9 @@ def handler(event, context):
         timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         request_id = str(uuid.uuid4())
         
-        # Obtener API key desde Secrets Manager
-        api_key = get_api_key_from_secret()
+        # Usar la API key directamente desde la variable de entorno
+        # En una implementación final esto vendría de Secrets Manager
+        api_key = API_KEY
         
         # Intentar obtener datos de la API con reintentos
         data = fetch_api_data(api_key, MAX_RETRIES)
@@ -144,44 +146,12 @@ def handler(event, context):
             })
         }
 
-def get_api_key_from_secret():
-    """
-    Obtiene la API key desde AWS Secrets Manager.
-    
-    Returns:
-        str: API key recuperada
-    """
-    try:
-        # Obtener el secreto desde Secrets Manager
-        response = secretsmanager.get_secret_value(SecretId=SECRET_NAME)
-        
-        # El secreto podría estar en 'SecretString' o 'SecretBinary'
-        if 'SecretString' in response:
-            secret = response['SecretString']
-            if isinstance(secret, str):
-                try:
-                    # Intentar parsearlo como JSON
-                    secret_dict = json.loads(secret)
-                    # Buscar un campo estándar como "API_KEY" o usar la primera clave disponible
-                    if 'API_KEY' in secret_dict:
-                        return secret_dict['API_KEY']
-                    elif 'apiKey' in secret_dict:
-                        return secret_dict['apiKey']
-                    else:
-                        # Usar la primera clave como fallback
-                        return list(secret_dict.values())[0]
-                except json.JSONDecodeError:
-                    # Si no es JSON, usar el string completo
-                    return secret
-        
-        # Fallback a un valor por defecto para desarrollo (NUNCA usar en producción)
-        logger.warning("No se pudo obtener la API key desde Secrets Manager. Usando valor por defecto para DESARROLLO.")
-        return "dev-api-key-placeholder"
-    
-    except Exception as e:
-        logger.error(f"Error al obtener la API key desde Secrets Manager: {str(e)}")
-        # Fallback a un valor por defecto para desarrollo (NUNCA usar en producción)
-        return "dev-api-key-placeholder"
+# def get_api_key_from_secret():
+#     """
+#     Código comentado: la opción de usar Secrets Manager ha sido removida
+#     por simplicidad para desarrollo.
+#     """
+#     pass
 
 def fetch_api_data(api_key, max_retries):
     """
@@ -230,6 +200,9 @@ def notify_error(error_message, request_id, stack_trace=None):
         return
     
     try:
+        # Inicializar cliente de SNS cuando se necesita
+        sns = boto3.client('sns')
+        
         message = {
             "error": error_message,
             "timestamp": datetime.datetime.now().isoformat(),

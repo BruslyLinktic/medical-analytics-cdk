@@ -1,8 +1,7 @@
 #!/bin/bash
-# Script para dar permisos de ejecución a los scripts
 
-chmod +x deploy_corrected.sh
-chmod +x test_cors.py
+# Script para dar permisos de ejecución a todos los scripts
+chmod +x /Users/brandowleon/medical-analytics-cdk/scripts/*.sh
+chmod +x /Users/brandowleon/medical-analytics-cdk/scripts/*.py
 
-echo "Permisos de ejecución configurados correctamente."
-echo "Ahora puedes ejecutar ./deploy_corrected.sh para desplegar el proyecto."
+echo "✅ Permisos de ejecución otorgados a todos los scripts"

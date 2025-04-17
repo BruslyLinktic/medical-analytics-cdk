@@ -76,9 +76,23 @@ class CDNStack(Stack):
         with open("frontend/index.html", "r") as file:
             html_content = file.read()
             
-        # Reemplazar la URL de la API y la API key
+        # Reemplazar la URL de la API 
         html_content = html_content.replace("{{API_ENDPOINT}}", f"{api_url}upload")
-        html_content = html_content.replace("{{API_KEY}}", api_key_value)
+        
+        # Para la API key, usamos un placeholder y agregamos instrucciones para actualizarla
+        # después del despliegue
+        if api_key_value == "placeholder-api-key-update-after-deployment":
+            html_content = html_content.replace("{{API_KEY}}", api_key_value)
+            # Agregamos un comentario en el HTML con instrucciones para actualizar la API key
+            html_content = html_content.replace("</body>", """
+            <!-- 
+            IMPORTANTE: Después del despliegue, actualiza la API_KEY con el comando:
+            aws apigateway get-api-keys --name-query medical-analytics-api-key --include-values --query 'items[0].value' --output text
+            Y luego actualiza este archivo manualmente.
+            -->
+            </body>""")
+        else:
+            html_content = html_content.replace("{{API_KEY}}", api_key_value)
         
         # Crear archivo temporal con la URL actualizada
         temp_dir = tempfile.mkdtemp()

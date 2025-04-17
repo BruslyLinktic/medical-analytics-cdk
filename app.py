@@ -2,7 +2,6 @@
 import os
 
 import aws_cdk as cdk
-from aws_cdk import aws_secretsmanager as secretsmanager
 
 from medical_analytics.storage_stack import StorageStack
 from medical_analytics.lambda_layer_stack import LambdaLayerStack
@@ -58,19 +57,8 @@ ingestion_stack = IngestionStack(
     description="Stack de ingesta para el sistema de analítica médica"
 )
 
-# Para acceder a la API Key, necesitamos recuperarla desde el secreto
-api_key_value = None
-if hasattr(ingestion_stack, 'api_key_secret') and ingestion_stack.api_key_secret:
-    # En producción, este valor se recuperaría de Secrets Manager
-    # Para desarrollo, lo configuramos manualmente
-    api_key_secret = ingestion_stack.api_key_secret
-    try:
-        # Intentar acceder al valor para pasarlo al frontend
-        api_key_value = api_key_secret.secret_value.to_string()
-    except Exception:
-        # Si no podemos acceder directamente (es un constructo CDK), 
-        # usaremos una salida para recuperarlo después del despliegue
-        api_key_value = "${aws secretsmanager get-secret-value --secret-id " + api_key_secret.secret_name + " --query 'SecretString' --output text}"
+# Valor placeholder para la API key - se actualizará después del despliegue
+api_key_value = "placeholder-api-key"
 
 # Despliegue del stack de CDN - ahora creamos el frontend dentro de este stack
 cdn_stack = CDNStack(
