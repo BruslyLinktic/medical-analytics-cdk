@@ -15,20 +15,6 @@ echo -e "${BLUE}=== Iniciando construcción de capas y despliegue ===${NC}"
 echo -e "${YELLOW}Activando entorno virtual...${NC}"
 source venv/bin/activate
 
-# 2. Hacer scripts ejecutables
-echo -e "${YELLOW}Haciendo scripts ejecutables...${NC}"
-chmod +x scripts/*.sh packaged_layers/*.sh
-
-# 3. Construir las capas Lambda
-echo -e "${YELLOW}Construyendo capas Lambda...${NC}"
-./packaged_layers/layer-builder.sh
-
-# 4. Verificar que las capas se crearon correctamente
-if [ ! -f "packaged_layers/pandas_layer.zip" ] || [ ! -f "packaged_layers/common_layer.zip" ]; then
-    echo -e "${RED}Error: No se pudieron crear los archivos de las capas Lambda.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}Capas Lambda creadas exitosamente.${NC}"
 
 # 5. Desplegar los stacks
 echo -e "${YELLOW}Desplegando stacks...${NC}"

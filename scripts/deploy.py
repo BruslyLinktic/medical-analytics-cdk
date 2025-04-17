@@ -50,7 +50,7 @@ def main():
     cdn_stack = f"medical-analytics-cdn-{stage}"
     
     # Configurar temporalmente las variables de entorno necesarias
-    os.environ["CDK_DEFAULT_REGION"] = "us-east-1"  # Cambiar según sea necesario
+    os.environ["CDK_DEFAULT_REGION"] = "us-east-2"  # Cambiar según sea necesario
     os.environ["CDK_DEFAULT_ACCOUNT"] = run_command("aws sts get-caller-identity --query 'Account' --output text").strip()
     
     # Desplegar el stack de almacenamiento
