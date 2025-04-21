@@ -214,7 +214,7 @@ class IngestionStack(Stack):
                 allow_origins=["*"],  # En producción, limitar a dominio de CloudFront
                 allow_methods=["GET", "POST", "OPTIONS"],
                 allow_headers=["Content-Type", "X-Amz-Date", "Authorization", "X-Api-Key", "Origin", "Accept"],
-                allow_credentials=True,
+                allow_credentials=False,  # No se puede usar True con allow_origins=["*"]
                 max_age=Duration.seconds(300)
             ),
             deploy_options=apigw.StageOptions(
@@ -308,8 +308,7 @@ class IngestionStack(Stack):
                     "responseParameters": {
                         "method.response.header.Access-Control-Allow-Origin": "'*'",
                         "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,Origin,Accept'",
-                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'",
-                        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'"
                     }
                 },
                 {
@@ -318,8 +317,7 @@ class IngestionStack(Stack):
                     "responseParameters": {
                         "method.response.header.Access-Control-Allow-Origin": "'*'",
                         "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,Origin,Accept'",
-                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'",
-                        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'"
                     }
                 },
                 {
@@ -328,8 +326,7 @@ class IngestionStack(Stack):
                     "responseParameters": {
                         "method.response.header.Access-Control-Allow-Origin": "'*'",
                         "method.response.header.Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,Origin,Accept'",
-                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'",
-                        "method.response.header.Access-Control-Allow-Credentials": "'true'"
+                        "method.response.header.Access-Control-Allow-Methods": "'GET,POST,OPTIONS'"
                     }
                 }
             ]
@@ -346,8 +343,7 @@ class IngestionStack(Stack):
                     response_parameters={
                         "method.response.header.Access-Control-Allow-Origin": True,
                         "method.response.header.Access-Control-Allow-Headers": True,
-                        "method.response.header.Access-Control-Allow-Methods": True,
-                        "method.response.header.Access-Control-Allow-Credentials": True
+                        "method.response.header.Access-Control-Allow-Methods": True
                     },
                     response_models={
                         "application/json": apigw.Model.EMPTY_MODEL
@@ -358,8 +354,7 @@ class IngestionStack(Stack):
                     response_parameters={
                         "method.response.header.Access-Control-Allow-Origin": True,
                         "method.response.header.Access-Control-Allow-Headers": True,
-                        "method.response.header.Access-Control-Allow-Methods": True,
-                        "method.response.header.Access-Control-Allow-Credentials": True
+                        "method.response.header.Access-Control-Allow-Methods": True
                     },
                     response_models={
                         "application/json": apigw.Model.ERROR_MODEL
@@ -370,8 +365,7 @@ class IngestionStack(Stack):
                     response_parameters={
                         "method.response.header.Access-Control-Allow-Origin": True,
                         "method.response.header.Access-Control-Allow-Headers": True,
-                        "method.response.header.Access-Control-Allow-Methods": True,
-                        "method.response.header.Access-Control-Allow-Credentials": True
+                        "method.response.header.Access-Control-Allow-Methods": True
                     },
                     response_models={
                         "application/json": apigw.Model.ERROR_MODEL

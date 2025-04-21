@@ -20,6 +20,7 @@ class StorageStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # Crear clave KMS para encriptar los datos médicos
+        # Crear clave KMS para encriptar los datos médicos con permisos adicionales para CloudFront
         encryption_key = kms.Key(
             self, 
             "MedicalAnalyticsEncryptionKey",
@@ -27,6 +28,21 @@ class StorageStack(Stack):
             enable_key_rotation=True,
             pending_window=Duration.days(7),
             description="Clave KMS para encriptar datos médicos sensibles"
+        )
+        
+        # Agregar permisos para que CloudFront pueda usar la clave
+        encryption_key.add_to_resource_policy(
+            iam.PolicyStatement(
+                sid="AllowCloudFrontServiceAccess",
+                effect=iam.Effect.ALLOW,
+                principals=[iam.ServicePrincipal("cloudfront.amazonaws.com")],
+                actions=[
+                    "kms:Decrypt",
+                    "kms:Encrypt",
+                    "kms:GenerateDataKey"
+                ],
+                resources=["*"]
+            )
         )
 
         # Crear bucket S3 para almacenar los datos médicos

@@ -265,7 +265,7 @@
                     fetch(API_URL, {
                         method: 'POST',
                         mode: 'cors', // Importante para CORS
-                        credentials: 'include', // Incluir credenciales si es necesario
+                        credentials: 'same-origin', // Para evitar problemas CORS
                         headers: {
                             'Content-Type': 'application/json',
                             'x-api-key': '{{API_KEY}}' // Se reemplazará en tiempo de despliegue

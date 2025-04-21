@@ -163,7 +163,7 @@ class CDNStack(Stack):
             ),
             security_headers_behavior=cloudfront.ResponseSecurityHeadersBehavior(
                 content_security_policy=cloudfront.ResponseHeadersContentSecurityPolicy(
-                    content_security_policy="default-src 'self'; img-src 'self' https://cdn-icons-png.flaticon.com; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' https://cdn.jsdelivr.net;",
+                    content_security_policy="default-src 'self'; img-src 'self' https://cdn-icons-png.flaticon.com; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;",
                     override=True
                 ),
                 strict_transport_security=cloudfront.ResponseHeadersStrictTransportSecurity(
